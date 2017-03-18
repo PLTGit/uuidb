@@ -1,0 +1,52 @@
+UUIDB
+
+use UUIDB;
+my $db = UUIDB->new(
+    name             => "Test",
+    document_type    => "JSON", # Defaults to "Raw" ? Can also be full package type.
+    document_options => {},
+    storage          => "Disk",
+    storage_options  => {
+        base   => "/path/to/data/",
+        get_as => "object", # data, reference, filehandle
+    }
+);
+
+my $key = $db->create( $obj );
+
+if ( $db->exists( $key ) ) { ... }
+
+# Just-In-Time creation callbacks for readthrough caching?
+my $obj = $db->get( $key );
+$db->set( $key => $obj );
+$db->delete( $key );
+$db->get_typed( $key, "Raw" ); # Passes 'type' arg to intermediary?
+
+type => "mixed" (must specify document type with every set/get)
+
+Options need to include the storage type, and settings for that.
+
+It should also include a default document type, yes/no?
+
+Tells it what UUID algorithm / provider to use
+
+storage => "Disk"      ; UUIDB::Storage::Disk <= return as data, or as filehandle? (r,w)?
+storage => "Memory"    ; UUIDB::Storage::Memory
+storage => "Memcached" ; UUIDB::Storage::Memcached
+storage => "REST"      ; UUIDB::Storage::REST <= needs an endpoint, credentials
+
+UUIDB::Storage
+    - actual handler for the exists / get / set / delete calls
+
+UUIDB::Document::FileHandle <= ?
+
+UUIDB::Document::Raw  <= Whatever you give it.
+    UUIDB::Document::TXT  <= attempts stringification, maybe extends Raw
+        UUIDB::Document::JSON <= maybe extends TXT? does JSON encoding / docoding
+        UUIDB::Document::YAML <= similar to JSON, uses YAML instead of txt
+
+UUIDB::Document::Typed ? (need a Moo(se) intermediary for instantiating objects)
+
+
+- [ ] ShardedKV::Storage::UUIDB
+- [ ] Tutorial POD
