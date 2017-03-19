@@ -29,8 +29,9 @@ sub store_document ($$;%) {
         }
     );
 
-    $document->id( $self->db->uuid() ) unless $document->id();
-    $self->store->{ $document->id() } = $document->frozen();
+    $document->uuid( $self->db->uuid() ) unless $document->uuid();
+    my $key = $self->standardize_key( $document->uuid() );
+    $self->store->{ $key } = $document->frozen();
 
     return $document;
 }
@@ -38,11 +39,12 @@ sub store_document ($$;%) {
 sub get_document ($$$) {
     my ($self, $key, $document_handler) = @_;
     my $found;
+    $key = $self->standardize_key( $key );
     if ( $self->exists( $key ) ) {
         $found = $document_handler->new_from_data(
             $document_handler->thaw( $self->store->{ $key } )
         );
-        $found->id( $key );
+        $found->uuid( $key );
     }
     return $found;
 }
@@ -57,16 +59,23 @@ sub exists ($$) {
             key => Str,
         }
     );
+    $key = $self->standardize_key( $key );
     return exists $self->store->{ $key };
 }
 
 sub delete ($$;$) {
     my ($self, $key, $warnings) = @_;
+    $key = $self->standardize_key( $key );
     if ( $self->exists( $key ) ) {
         delete $self->store->{ $key };
     } elsif ( $warnings ) {
         carp "Document $key not found, nothing deleted";
     }
+}
+
+sub standardize_key ($$) {
+    my ($self, $key) = @_;
+    return $self->SUPER::standardize_key( $key );
 }
 
 1;

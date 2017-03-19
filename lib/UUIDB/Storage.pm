@@ -7,6 +7,7 @@ use warnings;
 use Carp qw( croak );
 use Moo;
 use Types::Standard qw( InstanceOf );
+use UUID::Tiny qw( is_uuid_string );
 use UUIDB::Util qw( check_args );
 
 # TODO: POD, tests
@@ -27,6 +28,10 @@ sub standardize_key ($$) {
     my ($self, $key) = @_;
 
     # Should also check to make sure it's a UUID, etc.
+    croak "Invalid UUID"
+        unless defined( $key )
+        and    is_uuid_string( $key );
+
     return lc $key;
 }
 

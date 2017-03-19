@@ -1,11 +1,11 @@
-package UUIDB::Document::JSON;
+package UUIDB::Document::YAML;
 
 use v5.10;
 use strict;
 use warnings;
 
 use Moo;
-use JSON::PP qw( decode_json encode_json );
+use YAML::XS;
 
 # TODO: POD, tests
 extends qw( UUIDB::Document );

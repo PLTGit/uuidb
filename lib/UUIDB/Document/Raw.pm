@@ -1,25 +1,27 @@
-package UUIDB::Document::JSON;
+package UUIDB::Document::Raw;
 
 use v5.10;
 use strict;
 use warnings;
 
 use Moo;
-use JSON::PP qw( decode_json encode_json );
+
+# Does absolutely no translation whatsoever.
+# TODO: maybe provide the option for deep cloning.
 
 # TODO: POD, tests
 extends qw( UUIDB::Document );
 
-sub type { "JSON" }
+sub type { "Raw" }
 
 sub freeze ($;$) {
     my ($self, $data) = @_;
-    return encode_json( $data );
+    return $data;
 }
 
 sub thaw ($$) {
     my ($self, $frozen) = @_;
-    return decode_json( $frozen );
+    return $frozen;
 }
 
 1;

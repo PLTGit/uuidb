@@ -44,7 +44,7 @@ use warnings;
     # Slightly more OO version
     # Create it
     my $document = $db->create_document( \%data );
-    $key = $document->id();
+    $key = $document->uuid();
     $document->data->{still} = "simple data";
     $document->save(); # or $document->update();
 
@@ -62,7 +62,8 @@ use warnings;
 
 use Carp qw( carp croak );
 use Scalar::Util qw( blessed );
-use Types::Standard qw( HashRef InstanceOf Map Str );
+use Types::Standard qw( HashRef InstanceOf Map Ref Str );
+use UUID::Tiny qw( create_uuid_as_string is_uuid_string UUID_V4 );
 use UUIDB::Util qw( check_args is_loaded safe_require );
 
 # Makes some stuff easier.
@@ -91,8 +92,19 @@ has storage => (
     isa => InstanceOf[qw( UUIDB::Storage )],
 );
 
+# Not a fan of sub { sub {} }, but it's the best way to do what we're doing,
+# since we're passing args to create_uuid_as_string and therefor can'tjust point
+# straight at it.
+#
+# WARNING: some UUID versions don't provide a lot of variability.  Not only is
+# this cryptographically insecure, but it can lead to issues when it's being
+# used for distribution of data in storage (UUIDB::Storage::Fileplex, for
+# example, uses the first 3 octets for path resolution), and a lack of
+# variability can lead to putting too many entries in one location.
 has uuid_generator => (
-    is => 'rw',
+    is      => 'rw',
+    isa     => Ref[qw( CODE )],
+    default => sub { sub { create_uuid_as_string( UUID_V4 ) } },
 );
 
 
@@ -103,13 +115,14 @@ sub BUILD ($$) {
     if ( $args->{document_type} ) {
         $self->document_type( $args->{document_type} );
     }
+    # TODO: document_options.
     if ( $args->{storage_type} ) {
         $self->storage_type( $args->{storage_type} );
     }
-    # TODO: storage_options, which should include something like "set ID on the
-    # stored document's *data* object, so it keeps that around as well.  Or
+    # TODO: storage_options, which should include something like "set uuid on
+    # the stored document's *data* object, so it keeps that around as well.  Or
     # maybe that should be an option in the document handler, so that if
-    # configured, the ->id() will have an "after" modifier which propagates it
+    # configured, the ->uuiid() will have an "after" modifier which propagates
     # to the data itself (if it knows how to do that, which can be any manner of
     # callback).  Which reminds me, we really ought to introduce an event model
     # here generally.
@@ -226,12 +239,6 @@ sub create_typed ($$$;$) {
     return $as_document ? $document : $uuid;
 }
 
-# I don't think there's a good way to pass options to this one AND the list of
-# keys, not without being a bit too convoluted.  Now then, should it return the
-# simple list, the documents themselves, or a hash of key => value pairs, so
-# it's easy to match it all up?
-sub get_multi ($@) {
-}
 sub get ($$) {
     my ($self, $key) = @_;
     return $self->get_typed( $key, $self->default_document_type );
@@ -263,6 +270,10 @@ sub get_typed ($$$;$) {
     );
 }
 
+# I don't think there's a good way to pass options to this one AND the list of
+# keys, not without being a bit too convoluted.  Now then, should it return the
+# simple list, the documents themselves, or a hash of key => value pairs, so
+# it's easy to match it all up?
 sub get_multi ($@) {
     # TODO: need to figure out a good invocation signature for this.
     # ...and for graph storage, we'll want to introduce a "get_threaded" with a
@@ -283,7 +294,7 @@ sub save ($$;%) {
     my ($self, $document, %opts) = @_;
     # TODO: check_args
     $self->init_check();
-    $document->id( $self->uuid() ) unless $document->id();
+    $document->uuid( $self->uuid() ) unless $document->uuid();
     return $self->storage->store_document(
         $document,
         ( $opts{storage_opts} ?
@@ -321,7 +332,7 @@ sub set_typed ($$$%) {
         }->new_from_data( $value )
     );
 
-    $document->id( $key );
+    $document->uuid( $key );
 
     # While it's possible to pass just-in-time args to the storage engine, it's
     # probably best to leave this to settings with which it was instantiated in
@@ -357,7 +368,7 @@ sub init_check ($) {
 sub uuid ($) {
     my ($self) = @_;
     # TODO: Get a UUID from the defined provider and hand it back.
-    return '00000000-0000-0000-0000-000000000000'; #  undef;
+    return $self->uuid_generator->();
 }
 
 

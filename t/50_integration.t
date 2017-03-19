@@ -41,7 +41,7 @@ sub test_integration {
     is_deeply(
         \%data,
         \%data_copy,
-        "Data successfully stored and retreived"
+        "Data successfully stored and retrieved"
     );
 
     note "YOU ARE HERE: Keep working through the synopsis example";
