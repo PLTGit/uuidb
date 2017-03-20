@@ -5,7 +5,7 @@ use strict;
 use warnings;
 
 use Moo;
-use Carp qw( croak );
+use Carp qw( carp croak );
 use Types::Standard qw( Any Bool InstanceOf Maybe Ref Str );
 use Scalar::Util qw( blessed );
 
@@ -73,6 +73,13 @@ sub new_from_data ($$) {
         db   => $self->db,
         data => $data,
     );
+}
+
+sub update ($) {
+    my ($self) = @_;
+    carp "Document does not yet have a UUID, a new one will be assigned"
+        unless $self->uuid();
+    return $self->save();
 }
 
 sub save ($) {

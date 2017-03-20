@@ -32,7 +32,7 @@ throws_ok {
             frob => "this is not a validator",
         }
     );
-}   qr/Expected Type::Tiny/,
+}   qr/Invalid validator/,
     "Dies on invalid validator";
 
 throws_ok {
@@ -147,5 +147,44 @@ throws_ok {
     );
 }   qr/Found unrecognized args in call to check_args/,
     "Dies on unknown args";
+
+throws_ok {
+    check_args(
+        args => {
+            frob => "knob",
+        },
+        must => {
+            frob => qr/bonk/,
+        },
+    );
+}   qr/Data failed regex/,
+    "Dies on regex validation fail";
+
+throws_ok {
+    check_args(
+        args => {
+            frob => "knob",
+        },
+        must => {
+            frob => sub { $_[0] ne "knob" },
+        },
+    );
+}   qr/.*/,
+    "Dies on code validation fail";
+
+lives_ok {
+    check_args(
+        args => {
+            frob => "bob",
+        },
+        must => {
+            frob => [
+                Str,
+                qr/.o./,
+                sub { defined $_[0] },
+            ],
+        },
+    );
+}   "Stackable checks";
 
 done_testing;

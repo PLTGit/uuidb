@@ -26,29 +26,30 @@ use warnings;
     );
 
     # Create it
-    my $key = $db->create( \%data );
+    my $key = $uuidb->create( \%data );
+    say "Data exists" if $uuidb->exists( $key );
 
     # Read it
-    my %data_copy = %{ $db->get( $key ) };
+    my %data_copy = %{ $uuidb->get( $key ) };
 
     # Update it
     $data_copy{change} = "something";
-    $db->set( $key, \%data_copy );
+    $uuidb->set( $key, \%data_copy );
 
     # Delete it
-    $db->delete( $key );
+    $uuidb->delete( $key );
 
     # Double check.
-    say "Nope" unless $db->exists( $key );
+    say "Nope" unless $uuidb->exists( $key );
 
     # Slightly more OO version
     # Create it
-    my $document = $db->create_document( \%data );
+    my $document = $uuidb->create_document( \%data );
     $key = $document->uuid();
     $document->data->{still} = "simple data";
     $document->save(); # or $document->update();
 
-    if (my $document_copy = $db->get_document( $key )) {
+    if (my $document_copy = $uuidb->get_document( $key )) {
         is_deeply(
             $document_copy->data,
             $document->data,
@@ -113,11 +114,21 @@ has uuid_generator => (
 sub BUILD ($$) {
     my ($self, $args) = @_;
     if ( $args->{document_type} ) {
-        $self->document_type( $args->{document_type} );
+        $self->document_type(
+            $args->{document_type},
+            ( $args->{document_options} ?
+                %{ $args->{document_options} }
+            : () ),
+        );
     }
     # TODO: document_options.
     if ( $args->{storage_type} ) {
-        $self->storage_type( $args->{storage_type} );
+        $self->storage_type(
+            $args->{storage_type},
+            ( $args->{storage_options} ?
+                %{ $args->{storage_options} }
+            : () ),
+        );
     }
     # TODO: storage_options, which should include something like "set uuid on
     # the stored document's *data* object, so it keeps that around as well.  Or
@@ -128,82 +139,65 @@ sub BUILD ($$) {
     # here generally.
 }
 
-sub document_type ($$;$)  {
-    my ($self, $document_type, $custom_handler) = @_;
+sub document_type ($$;%)  {
+    my ($self, $document_type, %opts) = @_;
     # TODO: check_args
     check_args(
         args => {
-            document_type => $document_type,
+            %opts,
+            document_type => $document_type, # Takes precedence over %opts
         },
         must => {
             document_type => Str,
         },
-        can => {
-            custom_handler => InstanceOf[qw( UUIDB::Document )],
-        }
+        can => "*"
     );
 
-    my $handler;
     if ( lc $document_type eq "custom" ) {
-        croak "Missing custom document handler"
-            unless $custom_handler;
+        check_args(
+            args => \%opts,
+            must => { custom_handler => InstanceOf[qw( UUIDB::Document )] },
+            can  => "*",
+        );
         carp "Overwriting existing custom document handler"
             if $self->document_handler->{ $document_type };
-        $handler = $custom_handler;
 
-        # Associate it with ourselves, so that documents it spawns can use
+        # Associate it with ourselves, so documents it spawns can use
         # short-cut methods like $doc->save();
-        $handler->db( $self );
-    } elsif ( !$self->document_handler->{ $document_type } ) {
-        my $class = "UUIDB::Document::$document_type";
-        if ( $document_type =~ m/::/ ) {
-            # They gave us a class name, use that in its entirety.
-            $class = $document_type;
-        }
-        safe_require $class;
-        $handler = $class->new( db => $self );
+        $custom_handler->db( $self );
+        $self->document_handler->{ $document_type } = $custom_handler;
+    } else {
+        $self->init_document_handler( $document_type );
     }
 
     $self->default_document_type( $document_type );
-
-    # Only set if we already passed proper type constraints andchecks above.
-    if ( $handler ) {
-        $self->document_handler->{ $document_type } = $handler;
-    }
 }
 
-sub storage_type ($$;$)  {
-    my ($self, $storage_type, $custom_storage) = @_;
+sub storage_type ($$;%)  {
+    my ($self, $storage_type, %opts) = @_;
     # TODO: check_args
     check_args(
         args => {
+            %opts,
             storage_type => $storage_type,
         },
-        must => {
-            storage_type => Str,
-        },
-        can => {
-            custom_storage => InstanceOf[qw( UUIDB::Storage )],
-        }
+        must => { storage_type => Str },
+        can  => "*", # Deep checking will happen in the storage engine itself
     );
 
     my $storage;
-    my $storage_type_key = lc $storage_type;
     if ( lc $storage_type eq "custom" ) {
-        croak "Missing custom storage handler"
-            unless $custom_storage;
-
+        check_args(
+            args => \%opts,
+            must => { custom_storage => InstanceOf[qw( UUIDB::Storage )] },
+            can  => "*",
+        );
         $storage = $custom_storage;
 
         # Associate it with ourselves
         $storage->db( $self );
     } else {
-        my $class = "UUIDB::Storage::$storage_type";
-        if ( $storage_type =~ m/::/ ) {
-            $class = $storage_type;
-        }
-        safe_require $class;
-        $storage = $class->new( db => $self );
+        $storage = $self->init_storage( $storage_type, %opts );
     }
 
     carp "Overwriting storage engine, existing documents will detach"
@@ -223,7 +217,6 @@ sub create ($$;$$) {
 sub create_document ($$;$) {
     my ($self, $data, $type) = @_;
     return $self->create_typed(
-        $self,
         $data,
         $type || $self->default_document_type,
         1,
@@ -369,6 +362,50 @@ sub uuid ($) {
     my ($self) = @_;
     # TODO: Get a UUID from the defined provider and hand it back.
     return $self->uuid_generator->();
+}
+
+sub init_document_handler ($$;%) {
+    my ($self, $document_type, %opts) = @_;
+    check_args(
+        args => {
+            document_type => $document_type,
+        },
+        must => {
+            document_type => Str,
+        },
+        can => "*",
+    );
+
+    $self->document_handler->{ $document_type } ||= do {
+        my $class = "UUIDB::Document::$document_type";
+        if ( $document_type =~ m/::/ ) {
+            # They gave us a class name, use that in its entirety.
+            $class = $document_type;
+        }
+        safe_require $class;
+        $class->new( %opts, db => $self );
+    };
+    return $self->document_handler->{ $document_type }
+}
+
+sub init_storage ($$;%) {
+    my ($self, $storage_type, %opts) = @_;
+
+    check_args(
+        args => {
+            %opts,
+            storage_type => $storage_type,
+        },
+        must => { storage_type => Str },
+        can  => "*",
+    );
+
+    my $class = "UUIDB::Storage::$storage_type";
+    if ( $storage_type =~ m/::/ ) {
+        $class = $storage_type;
+    }
+    safe_require $class;
+    $storage = $class->new( %opts, db => $self  );
 }
 
 

@@ -60,7 +60,12 @@ sub exists ($$) {
         }
     );
     $key = $self->standardize_key( $key );
-    return exists $self->store->{ $key };
+    # Explicit boolean return
+    return (
+        exists $self->store->{ $key }
+        ? 1
+        : 0
+    );
 }
 
 sub delete ($$;$) {
@@ -68,6 +73,7 @@ sub delete ($$;$) {
     $key = $self->standardize_key( $key );
     if ( $self->exists( $key ) ) {
         delete $self->store->{ $key };
+        return 1;
     } elsif ( $warnings ) {
         carp "Document $key not found, nothing deleted";
     }

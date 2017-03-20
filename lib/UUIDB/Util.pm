@@ -1,5 +1,6 @@
 package UUIDB::Util;
 
+use Carp qw( carp croak );
 use Scalar::Util qw( blessed );
 use base qw( Exporter );
 
@@ -23,19 +24,48 @@ sub check_args (%) {
         and    ref( $args ) eq 'HASH';
 
     my $validate = sub {
-        my ($data, $validator) = @_;
-        die "Expected Type::Tiny, not " . ref( $validator )
-            unless blessed $validator
-            and    $validator->isa( "Type::Tiny" );
+        my ($data, $validation) = @_;
 
-        die "Invalid $key, wrong type"
-            unless $validator->check( $data );
+        my @checks = (
+            ref $validation && ref $validation eq "ARRAY"
+            ?  @$validation
+            : ( $validation )
+        );
 
-        # Dies on its own.
-        $validator->assert_valid( $data );
+        foreach my $check ( @checks ) {
+            if ( blessed $check ) {
+                if ( ref $check eq "Regexp" ) {
+                    my $pass = eval { $data =~ $check };
+                    croak "Data failed regex $check: " . ( $data // "undef" )
+                        unless $pass;
+                } else {
+                    die "Expected Type::Tiny, not " . ref( $check )
+                        unless blessed $check
+                        and (
+                            $check->isa( "Type::Tiny" )
+                            or (
+                                    $check->can( "check"        )
+                                and $check->can( "assert_valid" )
+                            )
+                        );
+
+                    die "Invalid $key, wrong type"
+                        unless $check->check( $data );
+
+                    # Dies on its own.
+                    $check->assert_valid( $data );
+                }
+            } elsif ( ref $check eq "CODE" ) {
+                local $@;
+                my $pass = eval { $check->( $data ) };
+                croak $@ if $@;
+                croak "Data failed sub check" unless $pass;
+            } else {
+                croak "Invalid validator";
+            }
+        }
     };
 
-    my $pass = 1;
     my %known_elements = map { $_ => 1 } keys %$args;
     if (my $must = delete $arg_details{must}) {
         MUST: foreach my $key ( keys %$must ) {
@@ -69,6 +99,7 @@ sub check_args (%) {
         }
     }
     if (my $can = delete $arg_details{can}) {
+        return 1 if ( !ref( $can ) && $can eq "*" );
         CAN: foreach my $key ( keys %$can ) {
 
             delete $known_elements{$key}
@@ -84,7 +115,7 @@ sub check_args (%) {
     if ( scalar( keys( %known_elements ) ) ) {
         die "Found unrecognized args in call to check_args";
     }
-    return $pass;
+    return 1;
 }
 
 sub is_loaded ($) {
