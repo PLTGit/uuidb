@@ -6,16 +6,40 @@ use warnings;
 
 use Carp qw( croak );
 use Moo;
-use Types::Standard qw( InstanceOf );
+use Types::Standard qw( Bool InstanceOf Str );
 use UUID::Tiny qw( is_uuid_string );
 use UUIDB::Util qw( check_args );
 
 # TODO: POD, tests
 
 has db => (
-    is => "rw",
+    is  => "rw",
     isa => InstanceOf[qw( UUIDB )],
 );
+
+has readonly => (
+    is      => "rw",
+    isa     => Bool,
+    default => sub { 0 },
+);
+
+# TODO: unit test for this.
+before [qw( store_document delete )] => sub {
+    my ($self) = @_;
+    croak "Cannot modify storage when readonly" if $self->readonly;
+};
+
+sub BUILD {
+    my ($self, %opts) = @_;
+    # Remove any of those settings which are attribute specific.
+    # Pass the remainder onto options.
+    $self->set_options( %opts );
+}
+
+sub set_options ($%) {
+    my ($self, %opts) = @_;
+    # TODO: storage_options
+}
 
 sub store_document ($$;%) { croak "The 'store_document' method must be overridden in descendantclasses" }
 sub get_document   ($$$ ) { croak "The 'get_document' method must be overridden in descendantclasses"   }
@@ -37,6 +61,26 @@ sub standardize_key ($$) {
         and    is_uuid_string( $key );
 
     return lc $key;
+}
+
+# Assumes the document stores data internally as a hash, and is defined by the
+# time we get here.
+sub simple_value_extractor ($$$) {
+    my ($self, $document, $field) = @_;
+    check_args(
+        args => {
+            document => $document,
+            field    => $field,
+        },
+        must => {
+            document => InstanceOf[qw( UUIDB::Document )],
+            field    => [
+                Str,
+                qr/./, # Must not be zero length
+            ],
+        },
+    );
+    return $document->data->{ $field };
 }
 
 1;

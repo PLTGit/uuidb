@@ -7,27 +7,47 @@ use warnings;
 use Carp qw( carp croak );
 
 use Moo;
-use UUIDB::Util qw( check_args );
-use Types::Standard qw( Bool Ref );
-use Digest::MD5 qw( md5_hex );
+use Digest::MD5     qw( md5_hex            );
+use File::Path      qw( mkpath             );
+use Types::Standard qw( Bool Maybe Ref Str );
+use UUIDB::Util     qw( check_args         );
+
 extends qw( UUIDB::Storage );
 
 # TODO: POD
 
+has path => (
+    is => "rw",
+    isa => Str,
+);
+
 # Can be used to introduce higher local variability in those sequences
 # used for managing pathing.
 #
+# It is *highly* recommended to use the "propogate_uuid" setting in
+# UUIDB::Document options when this is enabled, since otherwise the reverse
+# association from hashed key to UUID is effectively impossible to determine.
 has rehash_key => (
     is      => 'rw',
     isa     => Maybe[Bool, Ref[qw( CODE )]],
     default => sub { 0 },
 );
 
-has rehash_algorithm => (
-    is      => 'rw',
-    isa     => Ref[qw( CODE )],
-    default => sub { \%md5_hex },
-);
+sub BUILD {
+    my ($self, %opts) = @_;
+    # Remove any of those settings which are attribute specific.
+    # Pass the remainder onto options.
+    $self->set_options( %opts );
+}
+
+sub set_options ($%) {
+    my ($self, %opts) = @_;
+    # TODO: storage_options
+    # path (location of the directory in which to build)
+    # indexes => {
+    #    field_name => sub { qw( which knows how to get the "name" value from a Document }
+    # }
+}
 
 sub store_document ($$;%) {
 }
@@ -40,12 +60,6 @@ sub exists ($$) {
 
 sub delete ($$;$) {
 }
-
-# TODO: storage_options
-# path (location of the directory in which to build)
-# indexes => {
-#    field_name => sub { qw( which knows how to get the "name" value from a Document }
-# }
 
 sub standardize_key ($$) {
     my ($self, $key) = @_;
@@ -68,12 +82,17 @@ sub rehash_algorithm ($$) {
     return md5_hex( $key );
 }
 
-# Assumes the document stores data internally as a hash, and is defined by the
-# time we get here.
-sub simple_value_extractor ($$$) {
-    my ($self, $document, $field) = @_;
-    return $document->data->{ $field };
+sub mkdir ($$) {
 }
 
+sub init_check ($) {
+    my ($self) = @_;
+    croak "Path not set" unless    $self->path;
+    croak "Invalid path" unless -d $self->path;
+    carp "Path not writable"
+        unless -d $self->path
+        and    -w $self->path
+        and      !$self->readonly;
+}
 
 1;

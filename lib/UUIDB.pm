@@ -63,7 +63,7 @@ use warnings;
 
 use Carp qw( carp croak );
 use Scalar::Util qw( blessed );
-use Types::Standard qw( HashRef InstanceOf Map Ref Str );
+use Types::Standard qw( Any Bool HashRef InstanceOf Map Ref Str );
 use UUID::Tiny qw( create_uuid_as_string is_uuid_string UUID_V4 );
 use UUIDB::Util qw( check_args is_loaded safe_require );
 
@@ -164,6 +164,7 @@ sub document_type ($$;%)  {
 
         # Associate it with ourselves, so documents it spawns can use
         # short-cut methods like $doc->save();
+        my $custom_handler = $opts{custom_handler};
         $custom_handler->db( $self );
         $self->document_handler->{ $document_type } = $custom_handler;
     } else {
@@ -192,7 +193,7 @@ sub storage_type ($$;%)  {
             must => { custom_storage => InstanceOf[qw( UUIDB::Storage )] },
             can  => "*",
         );
-        $storage = $custom_storage;
+        $storage = $opts{custom_storage};
 
         # Associate it with ourselves
         $storage->db( $self );
@@ -237,21 +238,33 @@ sub get ($$) {
     return $self->get_typed( $key, $self->default_document_type );
 }
 sub get_typed ($$$;$) {
-    my ($self, $key, $type, $as_document) = @_;
+    my ($self, $key, $document_type, $as_document) = @_;
 
-    # TODO: check_args
-
-    # TODO: Encapsulate init chekcks
     $self->init_check;
-
-    croak "Document handler not initialized for $type"
-        unless $self->document_handler->{ $type };
-
-    # TODO: should probably pass the handler to the storage engine to coordinate,
-    # rather than calling thaw ourselves.
-    my $document = $self->storage->get_document(
-        $key, $self->document_handler->{ $type }
+    check_args(
+        args => {
+            key           => $key,
+            document_type => $document_type,
+            as_document   => $as_document,
+        },
+        must => {
+            key           =>  Any, # TODO: allow Str OR ArrayRef
+            document_type => [
+                Str,
+                qr/[^\s]/,
+                sub {
+                    croak "Document handler not initialized for $_[0]"
+                        unless $self->document_handler->{ $_[0] };
+                },
+            ],
+            as_document   => Bool,
+        },
     );
+
+    my $document = $self->storage->get_document(
+        $key, $self->document_handler->{ $document_type }
+    );
+    # TODO:refactor for get_multi access ($key isa ArrayRef)
     return (
         $as_document
         ? $document # They want the document?  They got it!
@@ -405,7 +418,7 @@ sub init_storage ($$;%) {
         $class = $storage_type;
     }
     safe_require $class;
-    $storage = $class->new( %opts, db => $self  );
+    return $class->new( %opts, db => $self  );
 }
 
 
