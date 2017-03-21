@@ -33,6 +33,13 @@ has rehash_key => (
     default => sub { 0 },
 );
 
+# Should this be an array or a hash?  Or a map, of some kind?
+has indices => (
+    is      => 'rw',
+    isa     => ArrayRef[Str],
+    default => sub { [] },
+);
+
 sub BUILD {
     my ($self, %opts) = @_;
     # Remove any of those settings which are attribute specific.
@@ -83,6 +90,7 @@ sub rehash_algorithm ($$) {
 }
 
 sub mkdir ($$) {
+    # TODO: this
 }
 
 sub init_check ($) {
@@ -93,6 +101,16 @@ sub init_check ($) {
         unless -d $self->path
         and    -w $self->path
         and      !$self->readonly;
+}
+
+# Find an index entry
+sub search_index ($$$) {
+    my ($self, $index, $starts_with) = @_;
+}
+
+# Given an index entry, return the list of UUIDs it contains.
+sub lookup_by_index ($$$) {
+    my ($self, $index, $value) = @_;
 }
 
 1;
