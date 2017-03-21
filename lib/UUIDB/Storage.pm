@@ -63,24 +63,4 @@ sub standardize_key ($$) {
     return lc $key;
 }
 
-# Assumes the document stores data internally as a hash, and is defined by the
-# time we get here.
-sub simple_value_extractor ($$$) {
-    my ($self, $document, $field) = @_;
-    check_args(
-        args => {
-            document => $document,
-            field    => $field,
-        },
-        must => {
-            document => InstanceOf[qw( UUIDB::Document )],
-            field    => [
-                Str,
-                qr/./, # Must not be zero length
-            ],
-        },
-    );
-    return $document->data->{ $field };
-}
-
 1;

@@ -87,4 +87,35 @@ sub save ($) {
     return $self->db->save( $self );
 }
 
+# Given a field specification, return a corresponding value from our data.
+# Assumes the internal data representation is a hash.
+# TODO: See if there's some equivalent for DeepHash navigation out there? Or
+# maybe just rewrite it?  E.g., be able to do this.is.some.key to retrieve a
+# nested value from "{ this => { is => { some => { key => $value } } } }"
+sub extract ($$) {
+    my ($self, $field) = @_;
+    check_args(
+        args => {
+            field => $field,
+        },
+        must => {
+            field => [
+                Str,
+                qr/./, # Must not be zero length
+            ],
+        },
+    );
+
+    # Is our data an object of sots, with a named accessor for the field?
+    if (
+        blessed $self->data
+        and     $self->data->can( $field )
+    ) {
+        return $self->data->$field();
+    } elsif ( ref( $self->data ) eq 'HASH' ) {
+        return $self->data->{ $field };
+    }
+
+    return ();
+}
 1;
