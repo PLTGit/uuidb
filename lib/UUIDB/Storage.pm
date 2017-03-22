@@ -30,29 +30,29 @@ before [qw( store_document delete )] => sub {
 };
 
 sub BUILD {
-    my ($self, %opts) = @_;
+    my ($self, $opts) = @_;
     # Remove any of those settings which are attribute specific.
     # Pass the remainder onto options.
-    $self->set_options( %opts );
+    $self->set_options( %$opts );
 }
 
-sub set_options ($%) {
+sub set_options {
     my ($self, %opts) = @_;
     # TODO: storage_options
 }
 
-sub store_document ($$;%) { croak "The 'store_document' method must be overridden in descendantclasses" }
-sub get_document   ($$$ ) { croak "The 'get_document' method must be overridden in descendantclasses"   }
-sub exists         ($$  ) { croak "The 'exists' method must be overridden in descendantclasses"         }
-sub delete         ($$;$) { croak "The 'delete' method must be overridden in descendantclasses"         }
+sub store_document { croak "The 'store_document' method must be overridden in descendantclasses" }
+sub get_document   { croak "The 'get_document' method must be overridden in descendantclasses"   }
+sub exists         { croak "The 'exists' method must be overridden in descendantclasses"         }
+sub delete         { croak "The 'delete' method must be overridden in descendantclasses"         }
 
 # Simple aliases
-sub store          ($$;%) { &store_document }
-sub get            ($$$ ) { &get_document   }
+sub store          { &store_document }
+sub get            { &get_document   }
 
 # TODO: standardize_key ?
 
-sub standardize_key ($$) {
+sub standardize_key {
     my ($self, $key) = @_;
 
     # Should also check to make sure it's a UUID, etc.

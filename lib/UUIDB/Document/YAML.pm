@@ -12,12 +12,12 @@ extends qw( UUIDB::Document );
 
 sub type { "JSON" }
 
-sub freeze ($;$) {
+sub freeze {
     my ($self, $data) = @_;
     return encode_json( $data );
 }
 
-sub thaw ($$) {
+sub thaw {
     my ($self, $frozen) = @_;
     return decode_json( $frozen );
 }

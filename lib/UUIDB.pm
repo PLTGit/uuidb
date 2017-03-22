@@ -111,7 +111,7 @@ has uuid_generator => (
 
 # TODO: BUILDARGS validation
 
-sub BUILD ($$) {
+sub BUILD {
     my ($self, $args) = @_;
     if ( $args->{document_type} ) {
         $self->document_type(
@@ -139,7 +139,7 @@ sub BUILD ($$) {
     # here generally.
 }
 
-sub document_type ($$;%)  {
+sub document_type {
     my ($self, $document_type, %opts) = @_;
     # TODO: check_args
     check_args(
@@ -174,7 +174,7 @@ sub document_type ($$;%)  {
     $self->default_document_type( $document_type );
 }
 
-sub storage_type ($$;%)  {
+sub storage_type {
     my ($self, $storage_type, %opts) = @_;
     # TODO: check_args
     check_args(
@@ -207,7 +207,7 @@ sub storage_type ($$;%)  {
     $self->storage( $storage );
 }
 
-sub create ($$;$$) {
+sub create {
     my ($self, $data, $type, $as_document) = @_;
     return $self->create_typed(
         $data,
@@ -215,7 +215,7 @@ sub create ($$;$$) {
         $as_document,
     );
 }
-sub create_document ($$;$) {
+sub create_document {
     my ($self, $data, $type) = @_;
     return $self->create_typed(
         $data,
@@ -223,7 +223,7 @@ sub create_document ($$;$) {
         1,
     );
 }
-sub create_typed ($$$;$) {
+sub create_typed {
     my ($self, $data, $type, $as_document) = @_;
     my $uuid = $self->uuid;
     my $document = $self->set_typed(
@@ -233,11 +233,11 @@ sub create_typed ($$$;$) {
     return $as_document ? $document : $uuid;
 }
 
-sub get ($$) {
+sub get {
     my ($self, $key) = @_;
     return $self->get_typed( $key, $self->default_document_type );
 }
-sub get_typed ($$$;$) {
+sub get_typed {
     my ($self, $key, $document_type, $as_document) = @_;
 
     $self->init_check;
@@ -280,14 +280,14 @@ sub get_typed ($$$;$) {
 # keys, not without being a bit too convoluted.  Now then, should it return the
 # simple list, the documents themselves, or a hash of key => value pairs, so
 # it's easy to match it all up?
-sub get_multi ($@) {
+sub get_multi {
     # TODO: need to figure out a good invocation signature for this.
     # ...and for graph storage, we'll want to introduce a "get_threaded" with a
     # depth setting, but that's likely to be in the Informcom specific data
     # model rather than here.
 }
 
-sub get_document ($$;$) {
+sub get_document {
     my ($self, $key, $type) = @_;
     # TODO: check_args
 
@@ -296,7 +296,7 @@ sub get_document ($$;$) {
     $self->get_typed( $key, ($type || $self->default_document_type), 1 );
 }
 
-sub save ($$;%) {
+sub save {
     my ($self, $document, %opts) = @_;
     # TODO: check_args
     $self->init_check();
@@ -309,7 +309,7 @@ sub save ($$;%) {
     );
 }
 
-sub set ($$$;%) {
+sub set {
     my ($self, $key, $data, %opts) = @_;
     # TODO:check_args
     $opts{type} ||= $self->default_document_type;
@@ -318,7 +318,7 @@ sub set ($$$;%) {
         %opts,
     );
 }
-sub set_typed ($$$%) {
+sub set_typed {
     my ($self, $key, $value, %opts) = @_;
 
     $self->init_check;
@@ -351,7 +351,7 @@ sub set_typed ($$$%) {
     );
 }
 
-sub exists ($$) {
+sub exists {
     my ($self, $key) = @_;
     $self->init_check;
     return $self->storage->exists( $key );
@@ -359,25 +359,25 @@ sub exists ($$) {
 
 # TODO: standardize on positional vs named?  Are there "options" we want to
 # potentially pass during exists / delete checks?
-sub delete ($$;$) {
+sub delete {
     my ($self, $key, $warnings) = @_;
     return $self->storage->delete( $key, $warnings );
 }
 
-sub init_check ($) {
+sub init_check {
     my ($self) = @_;
 
     croak "Storage not initialized"
         unless $self->storage;
 }
 
-sub uuid ($) {
+sub uuid {
     my ($self) = @_;
     # TODO: Get a UUID from the defined provider and hand it back.
     return $self->uuid_generator->();
 }
 
-sub init_document_handler ($$;%) {
+sub init_document_handler {
     my ($self, $document_type, %opts) = @_;
     check_args(
         args => {
@@ -401,7 +401,7 @@ sub init_document_handler ($$;%) {
     return $self->document_handler->{ $document_type }
 }
 
-sub init_storage ($$;%) {
+sub init_storage {
     my ($self, $storage_type, %opts) = @_;
 
     check_args(

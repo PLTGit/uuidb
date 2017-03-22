@@ -17,7 +17,7 @@ has store => (
     default => sub { {} },
 );
 
-sub store_document ($$;%) {
+sub store_document {
     my ($self, $document, %options) = @_;
 
     check_args(
@@ -36,7 +36,7 @@ sub store_document ($$;%) {
     return $document;
 }
 
-sub get_document ($$$) {
+sub get_document {
     my ($self, $key, $document_handler) = @_;
     my $found;
     $key = $self->standardize_key( $key );
@@ -49,7 +49,7 @@ sub get_document ($$$) {
     return $found;
 }
 
-sub exists ($$) {
+sub exists {
     my ($self, $key) = @_;
     check_args(
         args => {
@@ -68,7 +68,7 @@ sub exists ($$) {
     );
 }
 
-sub delete ($$;$) {
+sub delete {
     my ($self, $key, $warnings) = @_;
     $key = $self->standardize_key( $key );
     if ( $self->exists( $key ) ) {
@@ -79,7 +79,7 @@ sub delete ($$;$) {
     }
 }
 
-sub standardize_key ($$) {
+sub standardize_key {
     my ($self, $key) = @_;
     return $self->SUPER::standardize_key( $key );
 }

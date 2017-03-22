@@ -14,12 +14,12 @@ extends qw( UUIDB::Document );
 
 sub type { "Raw" }
 
-sub freeze ($;$) {
+sub freeze {
     my ($self, $data) = @_;
     return $data;
 }
 
-sub thaw ($$) {
+sub thaw {
     my ($self, $frozen) = @_;
     return $frozen;
 }

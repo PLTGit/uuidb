@@ -47,7 +47,7 @@ sub BUILD {
     $self->set_options( %opts );
 }
 
-sub set_options ($%) {
+sub set_options {
     my ($self, %opts) = @_;
     # TODO: storage_options
     # path (location of the directory in which to build)
@@ -56,19 +56,19 @@ sub set_options ($%) {
     # }
 }
 
-sub store_document ($$;%) {
+sub store_document {
 }
 
-sub get_document ($$$) {
+sub get_document {
 }
 
-sub exists ($$) {
+sub exists {
 }
 
-sub delete ($$;$) {
+sub delete {
 }
 
-sub standardize_key ($$) {
+sub standardize_key {
     my ($self, $key) = @_;
     # This also does an is_uuid_string check for us.
     $key = $self->SUPER::standardize_key( $key );
@@ -84,16 +84,16 @@ sub standardize_key ($$) {
     return $key;
 }
 
-sub rehash_algorithm ($$) {
+sub rehash_algorithm {
     my ($self, $key) = @_;
     return md5_hex( $key );
 }
 
-sub mkdir ($$) {
+sub mkdir {
     # TODO: this
 }
 
-sub init_check ($) {
+sub init_check {
     my ($self) = @_;
     croak "Path not set" unless    $self->path;
     croak "Invalid path" unless -d $self->path;
@@ -104,12 +104,12 @@ sub init_check ($) {
 }
 
 # Find an index entry
-sub search_index ($$$) {
+sub search_index {
     my ($self, $index, $starts_with) = @_;
 }
 
 # Given an index entry, return the list of UUIDs it contains.
-sub lookup_by_index ($$$) {
+sub lookup_by_index {
     my ($self, $index, $value) = @_;
 }
 
