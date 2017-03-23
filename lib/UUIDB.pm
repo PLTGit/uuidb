@@ -167,8 +167,11 @@ sub document_type {
         my $custom_handler = $opts{custom_handler};
         $custom_handler->db( $self );
         $self->document_handler->{ $document_type } = $custom_handler;
+        if ( %opts ) {
+            $custom_handler->set_options( %opts );
+        }
     } else {
-        $self->init_document_handler( $document_type );
+        $self->init_document_handler( $document_type, %opts );
     }
 
     $self->default_document_type( $document_type );

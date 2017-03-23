@@ -32,6 +32,18 @@ has propagate_uuid => (
     default => sub { 0 },
 );
 
+sub BUILD {
+    my ($self, $opts) = @_;
+    # Remove any of those settings which are attribute specific.
+    # Pass the remainder onto options.
+    $self->set_options( %$opts );
+}
+
+sub set_options {
+    my ($self, %opts) = @_;
+    # TODO: document_options
+}
+
 # TODO: specific die tests for this
 before [qw( data uuid )] => sub {
     my ($self, $x) = @_;
@@ -58,34 +70,6 @@ sub _trigger_uuid {
 sub type   { croak "The 'type' method must be overridden in descendant classes"   }
 sub freeze { croak "The 'freeze' method must be overridden in descendant classes" }
 sub thaw   { croak "The 'thaw' method must be overridden in descendant classes"   }
-
-# This is the frozen version of our own data (if we're in instance mode)
-sub frozen {
-    my ($self) = @_;
-    return $self->freeze( $self->data );
-}
-
-sub new_from_data {
-    my ($self, $data) = @_;
-    my $class = blessed $self;
-
-    return $class->new(
-        db   => $self->db,
-        data => $data,
-    );
-}
-
-sub update {
-    my ($self) = @_;
-    carp "Document does not yet have a UUID, a new one will be assigned"
-        unless $self->uuid();
-    return $self->save();
-}
-
-sub save {
-    my ($self) = @_;
-    return $self->db->save( $self );
-}
 
 # Given a field specification, return a corresponding value from our data.
 # Assumes the internal data representation is a hash.
@@ -118,4 +102,49 @@ sub extract {
 
     return ();
 }
+
+# This is the frozen version of our own data (if we're in instance mode)
+sub frozen {
+    my ($self) = @_;
+    return $self->freeze( $self->data );
+}
+
+sub new_from_data {
+    my ($self, $data) = @_;
+    my $class = blessed $self;
+
+    # TODO: We're making a new stateful document, but we want our options to
+    # propagate to it.  We need a quick way of consolidating those options
+    # for propagation.  Doing this with a minimum overhead in memory and
+    # performance would also be nice; especially since handing around a lot of
+    # refs is a *great* way to cause memory leaks.
+    return $class->new(
+        db   => $self->db,
+        data => $data,
+        propagate_uuid => $self->propagate_uuid,
+    );
+}
+
+sub save {
+    my ($self) = @_;
+    return $self->db->save( $self );
+}
+
+# Oftimes used in the naming of data entries in storage, during transmission,
+# etc.
+sub suffix {
+    my ($self) = @_;
+    if ( my $type = $self->type ) {
+        return lc $type;
+    }
+    return undef;
+}
+
+sub update {
+    my ($self) = @_;
+    carp "Document does not yet have a UUID, a new one will be assigned"
+        unless $self->uuid();
+    return $self->save();
+}
+
 1;

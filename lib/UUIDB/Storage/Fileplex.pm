@@ -9,7 +9,7 @@ use Carp qw( carp croak );
 use Moo;
 use Digest::MD5     qw( md5_hex            );
 use File::Path      qw( mkpath             );
-use Types::Standard qw( Bool Maybe Ref Str );
+use Types::Standard qw( ArrayRef Bool InstanceOf Maybe Ref Str );
 use UUIDB::Util     qw( check_args         );
 
 extends qw( UUIDB::Storage );
@@ -34,18 +34,11 @@ has rehash_key => (
 );
 
 # Should this be an array or a hash?  Or a map, of some kind?
-has indices => (
+has index => (
     is      => 'rw',
     isa     => ArrayRef[Str],
     default => sub { [] },
 );
-
-sub BUILD {
-    my ($self, %opts) = @_;
-    # Remove any of those settings which are attribute specific.
-    # Pass the remainder onto options.
-    $self->set_options( %opts );
-}
 
 sub set_options {
     my ($self, %opts) = @_;
@@ -57,6 +50,34 @@ sub set_options {
 }
 
 sub store_document {
+    my ($self, $document) = @_;
+
+    check_args(
+        args => { document => $document                         },
+        must => { document => InstanceOf[qw( UUIDB::Document )] },
+    );
+
+    $self->init_check();
+    $self->init_store();
+
+    my $data = $document->frozen;
+    # TODO: if $data is not defined, delete an existing record by the same key
+    # (since undef and deleted are equivalent).  If it does not exist, simply
+    # return undef, since there's nothing to store.
+
+    my ($document_path, $filename) = $self->make_document_path( $document );
+    my $storage_path = join( "/", $self->data_path, $document_path );
+    $self->mkdir( $storage_path ) unless -d $storage_path;
+
+    open( my $fh, '>', "$storage_path/$filename" );
+    print $fh $data;
+    close( $fh );
+
+    # TODO: error checking on the above
+
+    # ALSO TODO: process indexes.  In fact, process those in advance, and do all
+    # the file flushing at once.
+    return $document->uuid();
 }
 
 sub get_document {
@@ -72,7 +93,7 @@ sub standardize_key {
     my ($self, $key) = @_;
     # This also does an is_uuid_string check for us.
     $key = $self->SUPER::standardize_key( $key );
-    if ( my $rehash = $self->rehash ) {
+    if ( my $rehash = $self->rehash_key ) {
         if ( ref $rehash ) {
             # Run the coderef instead
             $key = $rehash->( $key );
@@ -89,18 +110,77 @@ sub rehash_algorithm {
     return md5_hex( $key );
 }
 
+sub make_document_path {
+    my ($self, $document) = @_;
+
+    $self->init_check();
+
+    croak "Document lacks UUID" unless $document->uuid();
+    my $key = $self->standardize_key(  $document->uuid() );
+
+    croak "No key" unless length( $key );
+
+    # WARNING: magic numbers
+    # TODO: make this variable?
+    my $prefix_breakdown_length = 2 * 3;
+    unless ( length( $key ) >= $prefix_breakdown_length ) {
+        carp "Insufficient key length, padding";
+        $key .= ( "0" x ( $prefix_breakdown_length - length( $key ) ) );
+    }
+
+    my $path = join(
+        "/",
+        substr( $key, 0, 2 ),
+        substr( $key, 2, 2 ),
+        substr( $key, 4, 2 ),
+    );
+
+    my $file = $key;
+    if ( my $suffix = $document->suffix ) {
+        $file.= ".$suffix";
+    }
+    my @parts = ( $path, $file );
+
+    return ( wantarray ? @parts : join( "/", @parts ) );
+}
+
 sub mkdir {
-    # TODO: this
+    my ($self, @paths) = @_;
+    return mkpath( @paths );
 }
 
 sub init_check {
     my ($self) = @_;
     croak "Path not set" unless    $self->path;
-    croak "Invalid path" unless -d $self->path;
-    carp "Path not writable"
+    croak "Invalid path (not found)" unless -d $self->path;
+    croak "Path not writable"
         unless -d $self->path
         and    -w $self->path
         and      !$self->readonly;
+}
+
+sub init_store {
+    my ($self) = @_;
+    $self->init_check();
+
+    $self->mkdir( grep { ! -d } (
+        $self->data_path,
+        $self->index_path,
+    ) );
+}
+
+sub data_path {
+    my ($self) = @_;
+    my $base_path = $self->path;
+    croak "No base path set" unless $base_path;
+    return "$base_path/data";
+}
+
+sub index_path {
+    my ($self)    = @_;
+    my $base_path = $self->path;
+    croak "No base path set" unless $base_path;
+    return "$base_path/index";
 }
 
 # Find an index entry
