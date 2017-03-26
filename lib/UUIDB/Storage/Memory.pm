@@ -75,7 +75,7 @@ sub delete {
         delete $self->store->{ $key };
         return 1;
     } elsif ( $warnings ) {
-        carp "Document $key not found, nothing deleted";
+        carp "Document not found, nothing deleted";
     }
 }
 

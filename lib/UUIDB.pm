@@ -64,7 +64,7 @@ use warnings;
 use Carp qw( carp croak );
 use Scalar::Util qw( blessed );
 use Types::Standard qw( Any Bool HashRef InstanceOf Map Ref Str );
-use UUID::Tiny qw( create_uuid_as_string is_uuid_string UUID_V4 );
+use UUID::Tiny qw( create_uuid_as_string UUID_V4 );
 use UUIDB::Util qw( check_args is_loaded safe_require );
 
 # Makes some stuff easier.
@@ -378,6 +378,19 @@ sub uuid {
     my ($self) = @_;
     # TODO: Get a UUID from the defined provider and hand it back.
     return $self->uuid_generator->();
+}
+
+sub default_document_handler {
+    my ($self) = @_;
+    my $type = $self->default_document_type;
+    croak "Default document type not set"
+        unless $type;
+
+    my $handler = $self->document_handler->{ $self->default_document_type };
+    croak "Default document handler not initialized"
+        unless $handler;
+
+    return $handler;
 }
 
 sub init_document_handler {

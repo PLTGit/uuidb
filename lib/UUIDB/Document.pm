@@ -6,8 +6,9 @@ use warnings;
 
 use Moo;
 use Carp qw( carp croak );
-use Types::Standard qw( Any Bool InstanceOf Maybe Ref Str );
+use Types::Standard qw( Any ArrayRef Bool InstanceOf Maybe Ref Str );
 use Scalar::Util qw( blessed );
+use UUIDB::Util  qw( check_args );
 
 # TODO: POD, tests
 has db => (
@@ -20,6 +21,7 @@ has data => (
     isa => Any,
 );
 
+# TODO: is_uuid_string as a constraint here.
 has uuid => (
     is      => "rw",
     isa     => Maybe[Str],
@@ -77,30 +79,35 @@ sub thaw   { croak "The 'thaw' method must be overridden in descendant classes" 
 # maybe just rewrite it?  E.g., be able to do this.is.some.key to retrieve a
 # nested value from "{ this => { is => { some => { key => $value } } } }"
 sub extract {
-    my ($self, $field) = @_;
+    my ($self, @fields) = @_;
+
+    return undef unless $self->data;
+
     check_args(
         args => {
-            field => $field,
+            field => \@fields,
         },
         must => {
-            field => [
-                Str,
-                qr/./, # Must not be zero length
-            ],
+            field => ArrayRef[Str],
         },
     );
 
-    # Is our data an object of sots, with a named accessor for the field?
-    if (
-        blessed $self->data
-        and     $self->data->can( $field )
-    ) {
-        return $self->data->$field();
-    } elsif ( ref( $self->data ) eq 'HASH' ) {
-        return $self->data->{ $field };
+    my %return;
+    foreach my $field ( @fields ) {
+        # Is our data an object of sorts, with a named accessor for the field?
+        if (
+            blessed $self->data
+            and     $self->data->can( $field )
+        ) {
+            $return{ $field } = $self->data->$field();
+        } elsif ( ref( $self->data ) eq 'HASH' ) {
+            $return{ $field } = $self->data->{ $field };
+        } else {
+            croak "Don't know how to extract document data";
+        }
     }
 
-    return ();
+    return \%return;
 }
 
 # This is the frozen version of our own data (if we're in instance mode)
