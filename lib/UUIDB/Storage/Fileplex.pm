@@ -17,6 +17,8 @@ extends qw( UUIDB::Storage );
 
 # TODO: POD
 
+# TODO: standardize naming, uuid vs key
+
 has path => (
     is => "rw",
     isa => Str,
@@ -83,6 +85,10 @@ has index => (
     default => sub { [] },
 );
 
+sub is_empty_dir (_);
+sub prune_file   (_);
+sub prune_tree   (_);
+
 sub set_options {
     my ($self, %opts) = @_;
     # TODO: storage_options
@@ -113,7 +119,7 @@ sub store_document {
         $document->suffix,
         1,
     );
-    $self->mkdir( $document_path ) unless -d $document_path;
+    mkpath( $document_path ) unless -d $document_path;
 
     # TODO: locking, overwrite warnings (if the document has been updated more
     # recently than the local $document believes it has, or fails to match the
@@ -151,10 +157,13 @@ sub get_document {
             document_handler => $document_handler,
         },
         must => {
-            uuid             => Str, # TODO: is_uuid_string ?
+            uuid => Str, # TODO: is_uuid_string ?
+        },
+        can => {
             document_handler => InstanceOf[qw( UUIDB::Document )],
         },
     );
+    $document_handler ||= $self->db->default_document_handler;
     my $path = $self->exists( $uuid, $document_handler->suffix, 1 );
     return undef unless $path;
 
@@ -190,9 +199,26 @@ sub delete {
     my ($self, $uuid, $warnings) = @_;
     $uuid = $self->standardize_key( $uuid );
     if ( my $path = $self->exists( $uuid, undef, 1 ) ) {
-        # TODO: clear from various indexes?
-        unlink $path or croak "Could not remove document from storage";
-        return 1;
+        # clear from various indexes, which requires loading first and doing the
+        # index lookups.  But if we can't load it (because the file is bad, or
+        # somehow corrupted, just emit a small warning and be on our way.
+        my @indexes  = @{ $self->index };
+        my $document = eval { $self->get_document( $uuid ) };
+        if ( @indexes && !$document ) {
+            carp "Unable to load document during delete, indexes will not be purged";
+        } elsif ( scalar @indexes ) {
+            my $values = $document->extract( @indexes );
+            CLEAN_INDEX: foreach my $index ( @indexes ) {
+                my $value = $$values{ $index };
+                next CLEAN_INDEX unless defined $value
+                               and    length  $value;
+
+                $self->clear_index( $index, $value, $uuid );
+            }
+        }
+
+        # Remove the document
+        return prune_file $path;
     } elsif ( $warnings ) {
         carp "Document not found, nothing deleted";
     }
@@ -296,11 +322,6 @@ sub build_chunked_path ($$$;$) {
     return ( wantarray ? @parts : join( "/", @parts ) );
 }
 
-sub mkdir {
-    my ($self, @paths) = @_;
-    return mkpath( @paths );
-}
-
 sub init_check {
     my ($self) = @_;
     croak "Path not set" unless    $self->path;
@@ -315,7 +336,7 @@ sub init_store {
     my ($self) = @_;
     $self->init_check();
 
-    $self->mkdir( $_ ) for grep { ! -d } (
+    mkpath( $_ ) for grep { ! -d } (
         $self->storage_path( $self->data_path  ),
         $self->storage_path( $self->index_path ),
     );
@@ -367,46 +388,35 @@ sub save_index {
             uuid  => Str, # is_uuid_string ?
         },
     );
-    # Load the existing index, if any
-    # Add the new UUID to the list
-    # Write the list back to the index
-    my ($index_path, $filename) = $self->compose_index_path( $index, $value );
-
-    # TODO: this logic will need to happen in multiple places, when resolving
-    # the complete index path.  I have to have *too* many little subs running
-    # around, so find an appropriate place to stick it.  Maybe a "full_path"
-    # bool to "make_index_path".  And that should probably be "construct"
-    # instead of "make", because we haven't done a mkdir yet.
-    my $index_name = $self->standardize_index_name( $index );
-    my $storage_path = $self->storage_path(
-        $self->index_path,
-        $index_name,
-        $index_path,
-    );
-    $self->mkdir( $storage_path ) unless -d $storage_path;
-    my $full_path = "$storage_path/$filename";
-    my @list = $uuid;
-    # TODO: replace this with "lookup by index" call
-    if ( -f $full_path ) { # TODO: this is needed in lookup_by_index
-        my %data = map { $_ => 1 } @list;
-        open( my $fh, "<", $full_path );
-        while (my $entry = <$fh>) {
-            chomp $entry;
-            $data{$entry} = 1;
-        }
-        close( $fh );
-        @list = keys %data;
-    }
-    open( my $fh, ">", $full_path );
-    # TODO: benchmarking:
-    # Is it better to iterate and write, or should this be a join instead?
-    print $fh "$_\n" for @list;
-    close( $fh );
+    my $index_path = $self->compose_index_path( $index, $value, 1 );
+    write_index_file( $index_path, 1, $uuid );
 }
 
 sub clear_index {
-    my ($self, $index, $value, $uuid) = @_;
+    my ($self, $index, $value, $key) = @_;
     # TODO: this
+    check_args(
+        args => {
+            index => $index,
+            value => $value,
+            key   => $key,
+        },
+        must => {
+            index => [ Str, qr/\A[^\s]+/ ],
+            value => [ Str, qr/\A[^\s]+/ ],
+            key   => [ Str ],
+        },
+    );
+    $key = $self->SUPER::standardize_key( $key );
+    # Do an exact index match on filename.
+    if ( my $index_file = $self->search_index( $index, $value, 1, 1 ) ) {
+        my @uuids = grep { $_ ne $key } read_index_file( $index_file );
+        if ( scalar( @uuids ) ) {
+            write_index_file( $index_file, 0, @uuids );
+        } else {
+            remove_index_file( $index_file );
+        }
+    }
 }
 
 sub compose_index_path {
@@ -415,10 +425,14 @@ sub compose_index_path {
         args => {
             index => $index,
             key   => $key,
+            full  => $full,
         },
         must => {
             index => [Str, qr/./],
             key   => [Str, qr/./],
+        },
+        can => {
+            full  => Bool,
         },
     );
     my @parts = build_chunked_path(
@@ -457,88 +471,109 @@ sub standardize_index_name {
 sub search_index {
     my ($self, $index, $starts_with, $exact_match, $as_file) = @_;
 
-    # TODO: What's the minimum length required?
-
-    if ( $exact_match ) {
-        # Build the full path, return it if -f $full_path or undef otherwise.
-        my ($path, $file) = $self->compose_index_path( $index, $starts_with, 1 );
-        # TODO: standardize storage building routines
-        my $index_file = "$path/$file";
-        # Standardize "index key from file" routine
-        return ( -f $index_file
-            ? (
-                $as_file
-                ? "$path/$file"
-                : $file # TODO translate back to key name
-            ) : ()
-        );
-    } # otherwise...
-
-    # Build a base path from $self->index_chunk_length sized chunks (but only
-    # where those chunks are complete)
-    my $index_value = $self->standardize_index_name( $starts_with );
-    my @start_chunks;
-    my $partial = "";
-    my $chunks       = $self->index_chunks;
-    my $chunk_length = $self->index_chunk_length;
-    START_CHUNK: for ( my $i = 0; $i < $chunks; $i++ ) {
-        my $chunk = substr(
-            $index_value,
-            $i * $chunk_length,
-            $chunk_length,
-        );
-        if ( length( $chunk ) < $chunk_length ) {
-            # Grab the remainder, if any.
-            $partial = $chunk;
-            last START_CHUNK;
-        }
-        push( @start_chunks, $chunk );
-    }
-
-    my $start_path = $self->storage_path(
-        $self->index_path,
-        $self->standardize_index_name( $index ),
-        @start_chunks,
+    check_args(
+        args => {
+            index       => $index,
+            starts_with => $starts_with,
+            exact_match => $exact_match,
+            as_file     => $as_file,
+        },
+        must => {
+            index       => [ Str, qr/\A[^\s]+/ ],
+            # TODO: What's the minimum length required?
+            starts_with => [ Str, qr/\A[^\s]+/ ],
+        },
+        can => {
+            exact_match => Bool,
+            as_file     => Bool,
+        },
     );
-    return () unless -d $start_path;
 
-    my @search_paths;
-    if ( length( $partial ) ) {
-        opendir( my $dh, $start_path )
-            or croak "Unable to open path for searching";
-        DIR_SCAN: while (my $dir = readdir( $dh ) ) {
-            next DIR_SCAN if $dir =~ m/\A \.{1,2} \Z/x
-                          or $dir !~ m/\A \Q $partial \E/x;
-            push( @search_paths, join( "/", $start_path, $dir ) );
-        }
-        closedir( $dh );
-    } else {
-        push( @search_paths, $start_path );
-    }
+    croak "Unknown index '$index'"
+        unless grep { $_ eq $index } @{ $self->index };
 
-    # Use File::Find to accumulate a list of keys
-    # Use simple matching in the "wanted" sub:
-    #   is a file
-    #   the left N most characters of the filename must match $starts_with
-    #   ends with '.idx'
-    #
-    my @matches;
-    # TODO: parameterize ".idx" ?  At least standardize it, too many instances
-    # of the magic string.
     my $suffix = $self->index_suffix;
     if ( defined $suffix ) {
         $suffix =~ s/(?<!\.)$suffix\Z/\.$suffix/;
     } else {
         $suffix = "";
     }
-    find(
-        { wanted => sub {
-               -f $_
-            && $_ =~ m/\A \Q$index_value\E .* \Q$suffix\E \Z/sx
-            && push( @matches, $_ );
-        } }, 
-        @search_paths,
-    );
+
+    my @matches;
+    if ( $exact_match ) {
+        # Build the full path, return it if -f $full_path or undef otherwise.
+        # Do this up front because it's a cheaper lookup than just changing the
+        # directory regex below to be exact, instead of allowing expansion.
+        my ($index_path, $filename) = $self->compose_index_path( $index, $starts_with, 1 );
+        my $index_file = "$index_path/$filename";
+
+        # Not found? Return false.
+        return unless -f $index_file;
+
+        # Found? Return the path, if that's what they want.
+        return $index_file if $as_file;
+
+        # Return the name of the identified index.
+        push @matches, $filename;
+    } else {
+
+        # Build a base path from $self->index_chunk_length sized chunks (but only
+        # where those chunks are complete)
+        my $index_value  = $self->standardize_index_name( $starts_with );
+        my @start_chunks;
+        my $partial      = "";
+        my $chunks       = $self->index_chunks;
+        my $chunk_length = $self->index_chunk_length;
+        START_CHUNK: for ( my $i = 0; $i < $chunks; $i++ ) {
+            my $chunk = substr(
+                $index_value,
+                $i * $chunk_length,
+                $chunk_length,
+            );
+            if ( length( $chunk ) < $chunk_length ) {
+                # Grab the remainder, if any.
+                $partial = $chunk;
+                last START_CHUNK;
+            }
+            push( @start_chunks, $chunk );
+        }
+
+        my $start_path = $self->storage_path(
+            $self->index_path,
+            $self->standardize_index_name( $index ),
+            @start_chunks,
+        );
+        return () unless -d $start_path;
+
+        my @search_paths;
+        if ( length( $partial ) ) {
+            opendir( my $dh, $start_path )
+                or croak "Unable to open path for searching";
+            DIR_SCAN: while ( my $dir = readdir( $dh ) ) {
+                next DIR_SCAN if $dir =~ m/\A \.{1,2} \Z/x
+                              or $dir !~ m/\A \Q$partial\E/x;
+                push( @search_paths, join( "/", $start_path, $dir ) );
+            }
+            closedir( $dh );
+        } else {
+            push( @search_paths, $start_path );
+        }
+
+        # Use File::Find to accumulate a list of keys
+        # Use simple matching in the "wanted" sub:
+        #   is a file
+        #   the left N most characters of the filename must match $starts_with
+        #   ends with the suffix, if specified
+        #
+        find(
+            { wanted => sub {
+                   -f $_
+                && $_ =~ m/\A \Q$index_value\E .* \Q$suffix\E \Z/sx
+                && push( @matches, $_ );
+            } },
+            @search_paths,
+        );
+    }
 
     # Convert the keys back into strings
     # Return the strings
@@ -556,15 +591,115 @@ sub lookup_by_index {
     # Find exact match
     my $match = $self->search_index( $index, $value, 1, 1 );
     return () unless $match;
+    return read_index_file( $match );
+}
+
+# TODO: namespace clean this
+sub read_index_file (_) {
+    my ($file) = @_;
+    croak "Invalid index file" unless -f $file;
     # With the exact match confirmed, open the file and slurp the contents.
     my %data;
-    open( my $fh, "<", $match ) or croak "Could not open index file for reading";
+    open( my $fh, "<", $file ) or croak "Could not open index file for reading";
     while (my $entry = <$fh>) {
         chomp $entry;
         $data{$entry} = 1;
     }
     close( $fh );
     return keys %data;
+}
+
+# TODO: namespace clean this too
+sub write_index_file ($$@) {
+    my ($path, $merge, @uuids) = @_;
+    check_args(
+        args => {
+            path  => $path,
+            merge => $merge,
+            uuids => [ @uuids ],
+        },
+        must => {
+            path  => Str,
+            merge => Bool,
+            uuids => ArrayRef[Str], # is_uuid_string?
+        },
+    );
+
+    my ($storage_path, $filename) = $path =~ m{\A (.*) / (.*) \Z}x;
+
+    # Load the existing index, if any
+    # Add the new UUID to the list
+    # Write the list back to the index
+    mkpath( $storage_path ) unless -d $storage_path;
+    if ( $merge && -f $path ) {
+        push( @uuids, read_index_file( $path ) );
+    }
+    # Make sure the list is unique
+    my %data = map { $_ => 1 } @uuids;
+    open( my $fh, ">", $path );
+    # TODO: benchmarking:
+    # Is it better to iterate and write, or should this be a join instead?
+    print $fh "$_\n" for keys %data;
+    close( $fh );
+    return 1;
+}
+
+# TODO: namespace clean this as well
+sub remove_index_file (_) {
+    my ($path) = @_;
+
+    # Nothing to do if it doesn't exist.
+    return unless $path
+           and -f $path;
+
+    return prune_file $path;
+}
+
+sub prune_file (_) {
+    my ($path) = @_;
+
+    unlink $path or carp "Could not remove file";
+
+    # prune the directory tree if that was the only file in it (and so on)
+    $path =~ s{/[^/]+\Z}{};
+    prune_tree( $path );
+
+    return 1;
+}
+
+sub prune_tree (_) {
+    my ($dir) = @_;
+
+    croak "Invalid directory"
+        unless    $dir
+        and    -d $dir;
+
+    my $loop_dir = $dir;
+    $loop_dir =~ s{/*\Z}{}; # Remove any trailing slash
+    PRUNE: while (1) {
+        # Technically we could just do the rmdir instead of checking for
+        # emptiness first, but we're trying to be nice.
+        last PRUNE unless is_empty_dir $loop_dir;
+        last PRUNE unless rmdir        $loop_dir;
+        $loop_dir =~ s{\A (.*)/.* \Z}{$1}x;
+    }
+}
+
+sub is_empty_dir (_) {
+    my ($dir) = @_;
+    croak "Invalid directory"
+        unless    $dir
+        and    -d $dir;
+
+    my $empty = 1;
+    opendir( my $dh, $dir );
+    DIR_LOOP: while ( my $dir = readdir( $dh ) ) {
+        next DIR_LOOP if $dir =~ m{\A \.\.? \Z}x;
+        $empty = 0;
+        last DIR_LOOP;
+    }
+    closedir( $dh );
+    return $empty;
 }
 
 1;

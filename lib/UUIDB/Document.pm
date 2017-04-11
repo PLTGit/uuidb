@@ -34,6 +34,12 @@ has propagate_uuid => (
     default => sub { 0 },
 );
 
+has fatal_unknown_extracts => (
+    is      => "rw",
+    isa     => Bool,
+    default => sub { 0 },
+);
+
 sub BUILD {
     my ($self, $opts) = @_;
     # Remove any of those settings which are attribute specific.
@@ -97,9 +103,12 @@ sub extract {
         # Is our data an object of sorts, with a named accessor for the field?
         if (
             blessed $self->data
-            and     $self->data->can( $field )
         ) {
-            $return{ $field } = $self->data->$field();
+            if ( $self->data->can( $field ) ) {
+                $return{ $field } = $self->data->$field();
+            } elsif ( $self->fatal_unknown_extracts ) {
+                croak "Don't know how to extract field from object";
+            }
         } elsif ( ref( $self->data ) eq 'HASH' ) {
             $return{ $field } = $self->data->{ $field };
         } else {
