@@ -1,5 +1,54 @@
 package UUIDB::Storage::Fileplex;
 
+=head1 NAME
+
+UUIDB::Storage::Fileplex - File based document storage engine with index support
+
+=head1 SYNOPSIS
+
+    # Instantiated by UUIDB as part of general database setup.
+    my $uuidb = UUIDB->new(
+        document_type   => "JSON",
+        storage_type    => "Fileplex",
+        storage_options => {
+            path => "/path/to/database",
+        },
+    );
+
+    # Et voila!  There's no a JSON document on disk, retrievable later via key.
+    my $key = $uuidb->create({
+        this => "is",
+        some => "data",
+    });
+
+=head1 DESCRIPTION
+
+The "plex" in "Fileplex" comes from "plexus" as the notion of an interwoven mass
+or network (rather than the mathematical term for a complete system of equations
+for expressing relationships between quantities, but it wouldn't be too much of
+a stretch for that).  The interweaving aspect comes from how it decides to store
+the UUIDB documents on disk.
+
+Documents are stored one-to-a-file, named for the UUID assigned by the database
+engine.  In order to avoid complications with overloading inodes or making a
+directory untenable for maintenance it breaks them up a little accroding to a
+simple (but extensible) encoding scheme, paring off C<plex_chunk> pieces
+(default 3) of the UUID value of <plex_length> each (default 2).  For example:
+
+    A JSON document with the following UUID:
+    d35fd9d9-b899-440a-a8d2-07d7f0675f15
+
+    Would be stored in the following path:
+    d3/5f/d9/d35fd9d9-b899-440a-a8d2-07d7f0675f15.json
+    ^1 ^2 ^3 ^ Full UUID                         ^ Suffix
+
+...where the suffix value comes from the L<UUIDB::Document/suffix> value.
+
+TOOD: data storage
+TODO: indexing
+
+=cut
+
 use v5.10;
 use strict;
 use warnings;
@@ -10,19 +59,24 @@ use Moo;
 use Digest::MD5     qw( md5_hex    );
 use File::Find      qw( find       );
 use File::Path      qw( mkpath     );
-use Types::Standard qw( ArrayRef Bool InstanceOf Int Maybe Ref Str );
 use UUIDB::Util     qw( check_args );
+use Types::Standard qw(
+                        ArrayRef
+                        Bool
+                        InstanceOf
+                        Int
+                        Maybe
+                        Ref
+                        Str
+                    );
 
 extends qw( UUIDB::Storage );
 
+=head1 ATTRIBUTES
+
+=cut
+
 # TODO: POD
-
-# TODO: standardize naming, uuid vs key
-
-has path => (
-    is => "rw",
-    isa => Str,
-);
 
 has data_path => (
     is      => "rw",
@@ -30,10 +84,9 @@ has data_path => (
     default => sub { "data" },
 );
 
-has index_path => (
-    is      => "rw",
-    isa     => Str,
-    default => sub { "index" },
+has path => (
+    is => "rw",
+    isa => Str,
 );
 
 has plex_chunks => (
@@ -58,6 +111,12 @@ has index_chunk_length => (
     is      => "rw",
     isa     => Int,
     default => sub { 2 },
+);
+
+has index_path => (
+    is      => "rw",
+    isa     => Str,
+    default => sub { "index" },
 );
 
 has index_suffix => (
@@ -85,9 +144,16 @@ has index => (
     default => sub { [] },
 );
 
-sub is_empty_dir (_);
-sub prune_file   (_);
-sub prune_tree   (_);
+# Prototyes for internal consistency enforcement.  These belong to functions
+# which are scrubbed from the namespace, but that doesn't mean we're not
+# civilized about the composition of our internal routines.
+sub build_chunked_path ( $$$;$ );
+sub is_empty_dir       ( _     );
+sub prune_file         ( _     );
+sub prune_tree         ( _     );
+sub read_index_file    ( _     );
+sub remove_index_file  ( _     );
+sub write_index_file   ( $$@   );
 
 sub set_options {
     my ($self, %opts) = @_;
@@ -96,6 +162,28 @@ sub set_options {
     # indexes => {
     #    field_name => sub { qw( which knows how to get the "name" value from a Document }
     # }
+}
+
+sub init_check {
+    my ($self) = @_;
+    croak "Path not set" unless $self->path;
+    unless ( -d $self->path ) {
+        croak "Invalid path (not found)";
+    }
+    croak "Path not writable"
+        unless -d $self->path # Also catches failures to auto-create above
+        and    -w $self->path
+        and      !$self->readonly;
+}
+
+sub init_store {
+    my ($self) = @_;
+    $self->init_check();
+
+    mkpath( $_ ) for grep { ! -d } (
+        $self->storage_path( $self->data_path  ),
+        $self->storage_path( $self->index_path ),
+    );
 }
 
 sub store_document {
@@ -150,7 +238,6 @@ sub store_document {
 
 sub get_document {
     my ($self, $uuid, $document_handler) = @_;
-    # TODO: this
     check_args(
         args => {
             uuid             => $uuid,
@@ -165,7 +252,7 @@ sub get_document {
     );
     $document_handler ||= $self->db->default_document_handler;
     my $path = $self->exists( $uuid, $document_handler->suffix, 1 );
-    return undef unless $path;
+    return unless $path;
 
     open( my $fh, "<", $path ) or croak "Could not open document file for reading";
     my @data = <$fh>;
@@ -183,11 +270,15 @@ sub exists {
     my ($self, $uuid, $suffix, $as_path) = @_;
     check_args(
         args => {
-            uuid   => $uuid,
-            suffix => $suffix,
+            uuid    => $uuid,
+            suffix  => $suffix,
+            as_path => $as_path,
         },
-        must => { uuid   => Str        }, # TODO: is_uuid_string ?
-        can  => { suffix => Maybe[Str] },
+        must => { uuid   => Str }, # TODO: is_uuid_string ?
+        can  => {
+            suffix  => Maybe[Str],
+            as_path => Bool,
+        },
     );
     $suffix //= $self->db->default_document_handler->suffix;
     my $path = $self->compose_document_path( $uuid, $suffix, 1 );
@@ -211,7 +302,7 @@ sub delete {
             CLEAN_INDEX: foreach my $index ( @indexes ) {
                 my $value = $$values{ $index };
                 next CLEAN_INDEX unless defined $value
-                               and    length  $value;
+                                 and    length  $value;
 
                 $self->clear_index( $index, $value, $uuid );
             }
@@ -222,27 +313,6 @@ sub delete {
     } elsif ( $warnings ) {
         carp "Document not found, nothing deleted";
     }
-}
-
-sub standardize_key {
-    my ($self, $key) = @_;
-    # This also does an is_uuid_string check for us.
-    $key = $self->SUPER::standardize_key( $key );
-    if ( my $rehash = $self->rehash_key ) {
-        if ( ref $rehash ) {
-            # Run the coderef instead
-            $key = $rehash->( $key );
-        } else {
-            # TODO: definable hash engine to use.
-            $key = $self->rehash_algorithm( $key );
-        }
-    }
-    return $key;
-}
-
-sub rehash_algorithm {
-    my ($self, $key) = @_;
-    return md5_hex( $key );
 }
 
 sub compose_document_path {
@@ -269,85 +339,37 @@ sub compose_document_path {
     return ( wantarray ? @parts : join( "/", @parts ) );
 }
 
-# TODO: nameclean this
-sub build_chunked_path ($$$;$) {
-    my (
-        $key,
-        $chunks,
-        $chunk_length,
-        $suffix,
-    ) = @_;
-    check_args(
-        args => {
-            key          => $key,
-            chunks       => $chunks,
-            chunk_length => $chunk_length,
-            suffix       => $suffix,
-        },
-        must => {
-            key          => [Str, qr/[^\s]/],
-            chunks       => Int,
-            chunk_length => Int,
-        },
-        can => {
-            suffix => Maybe[Str],
-        },
-    );
-
-    croak "Need at least one chunk"               unless $chunks       >= 1;
-    croak "Chunks must have at least 1 character" unless $chunk_length >= 1;
-
-    my $breakdown_length = $chunks * $chunk_length;
-
-    if ( length( $key ) < $breakdown_length ) {
-        carp "Insufficient key length, padding";
-        $key .= ( "0" x ( $breakdown_length - length( $key ) ) );
-    }
-
-    my $path = join(
-        "/",
-        map { substr(
-            $key,
-            $_ * $chunk_length,      # Offset for chunk start
-            $chunk_length            # How much data to chunk?
-        ) } ( 0 .. ( $chunks - 1 ) ) # 0 based chunk no. index
-    );
-
-    my $file = $key;
-    if ( defined $suffix && length( $suffix) ) {
-        $file.= ( $suffix !~ m/^\./ ? "." : "" ) . $suffix;
-    }
-    my @parts = ( $path, $file );
-
-    return ( wantarray ? @parts : join( "/", @parts ) );
-}
-
-sub init_check {
-    my ($self) = @_;
-    croak "Path not set" unless    $self->path;
-    croak "Invalid path (not found)" unless -d $self->path;
-    croak "Path not writable"
-        unless -d $self->path
-        and    -w $self->path
-        and      !$self->readonly;
-}
-
-sub init_store {
-    my ($self) = @_;
-    $self->init_check();
-
-    mkpath( $_ ) for grep { ! -d } (
-        $self->storage_path( $self->data_path  ),
-        $self->storage_path( $self->index_path ),
-    );
-}
-
 sub storage_path {
     my ($self, @dirs) = @_;
     my $base_path = $self->path;
     croak "No base path set" unless $base_path;
     return join( "/", $base_path, @dirs );
 }
+
+sub rehash_algorithm {
+    my ($self, $key) = @_;
+    return md5_hex( $key );
+}
+
+sub standardize_key {
+    my ($self, $key) = @_;
+    # This also does an is_uuid_string check for us.
+    $key = $self->SUPER::standardize_key( $key );
+    if ( my $rehash = $self->rehash_key ) {
+        if ( ref $rehash ) {
+            # Run the coderef instead
+            $key = $rehash->( $key );
+        } else {
+            # TODO: definable hash engine to use.
+            $key = $self->rehash_algorithm( $key );
+        }
+    }
+    return $key;
+}
+
+=head1 Index Related Methods
+
+=cut
 
 # I need to do some thinking out loud.
 # There are 4 fundamental operations regarding indexes (a 5th, if we allow
@@ -393,24 +415,23 @@ sub save_index {
 }
 
 sub clear_index {
-    my ($self, $index, $value, $key) = @_;
-    # TODO: this
+    my ($self, $index, $value, $uuid) = @_;
     check_args(
         args => {
             index => $index,
             value => $value,
-            key   => $key,
+            uuid  => $uuid,
         },
         must => {
             index => [ Str, qr/\A[^\s]+/ ],
             value => [ Str, qr/\A[^\s]+/ ],
-            key   => [ Str ],
+            uuid   => [ Str ],
         },
     );
-    $key = $self->SUPER::standardize_key( $key );
+    $uuid = $self->SUPER::standardize_key( $uuid );
     # Do an exact index match on filename.
     if ( my $index_file = $self->search_index( $index, $value, 1, 1 ) ) {
-        my @uuids = grep { $_ ne $key } read_index_file( $index_file );
+        my @uuids = grep { $_ ne $uuid } read_index_file( $index_file );
         if ( scalar( @uuids ) ) {
             write_index_file( $index_file, 0, @uuids );
         } else {
@@ -503,7 +524,7 @@ sub search_index {
     if ( $exact_match ) {
         # Build the full path, return it if -f $full_path or undef otherwise.
         # Do this up front because it's a cheaper lookup than just changing the
-        # directory regex below to be exact, instead of allowing expansion.
+        # directory regex below to be exact.
         my ($index_path, $filename) = $self->compose_index_path( $index, $starts_with, 1 );
         my $index_file = "$index_path/$filename";
 
@@ -516,7 +537,6 @@ sub search_index {
         # Return the name of the identified index.
         push @matches, $filename;
     } else {
-
         # Build a base path from $self->index_chunk_length sized chunks (but only
         # where those chunks are complete)
         my $index_value  = $self->standardize_index_name( $starts_with );
@@ -543,7 +563,7 @@ sub search_index {
             $self->standardize_index_name( $index ),
             @start_chunks,
         );
-        return () unless -d $start_path;
+        return unless -d $start_path;
 
         my @search_paths;
         if ( length( $partial ) ) {
@@ -590,69 +610,79 @@ sub lookup_by_index {
     my ($self, $index, $value) = @_;
     # Find exact match
     my $match = $self->search_index( $index, $value, 1, 1 );
-    return () unless $match;
+    return unless $match;
     return read_index_file( $match );
 }
 
-# TODO: namespace clean this
-sub read_index_file (_) {
-    my ($file) = @_;
-    croak "Invalid index file" unless -f $file;
-    # With the exact match confirmed, open the file and slurp the contents.
-    my %data;
-    open( my $fh, "<", $file ) or croak "Could not open index file for reading";
-    while (my $entry = <$fh>) {
-        chomp $entry;
-        $data{$entry} = 1;
-    }
-    close( $fh );
-    return keys %data;
-}
+# Everything below this line should be namespace cleaned.
 
-# TODO: namespace clean this too
-sub write_index_file ($$@) {
-    my ($path, $merge, @uuids) = @_;
+sub build_chunked_path ($$$;$) {
+    my (
+        $key,
+        $chunks,
+        $chunk_length,
+        $suffix,
+    ) = @_;
     check_args(
         args => {
-            path  => $path,
-            merge => $merge,
-            uuids => [ @uuids ],
+            key          => $key,
+            chunks       => $chunks,
+            chunk_length => $chunk_length,
+            suffix       => $suffix,
         },
         must => {
-            path  => Str,
-            merge => Bool,
-            uuids => ArrayRef[Str], # is_uuid_string?
+            key          => [Str, qr/[^\s]/],
+            chunks       => Int,
+            chunk_length => Int,
+        },
+        can => {
+            suffix => Maybe[Str],
         },
     );
 
-    my ($storage_path, $filename) = $path =~ m{\A (.*) / (.*) \Z}x;
+    croak "Need at least one chunk"               unless $chunks       >= 1;
+    croak "Chunks must have at least 1 character" unless $chunk_length >= 1;
 
-    # Load the existing index, if any
-    # Add the new UUID to the list
-    # Write the list back to the index
-    mkpath( $storage_path ) unless -d $storage_path;
-    if ( $merge && -f $path ) {
-        push( @uuids, read_index_file( $path ) );
+    my $breakdown_length = $chunks * $chunk_length;
+
+    if ( length( $key ) < $breakdown_length ) {
+        carp "Insufficient key length, padding";
+        $key .= ( "0" x ( $breakdown_length - length( $key ) ) );
     }
-    # Make sure the list is unique
-    my %data = map { $_ => 1 } @uuids;
-    open( my $fh, ">", $path );
-    # TODO: benchmarking:
-    # Is it better to iterate and write, or should this be a join instead?
-    print $fh "$_\n" for keys %data;
-    close( $fh );
-    return 1;
+
+    my $path = join(
+        "/",
+        map { substr(
+            $key,
+            $_ * $chunk_length,      # Offset for chunk start
+            $chunk_length            # How much data to chunk?
+        ) } ( 0 .. ( $chunks - 1 ) ) # 0 based chunk no. index
+    );
+
+    my $file = $key;
+    if ( defined $suffix && length( $suffix) ) {
+        $file.= ( $suffix !~ m/^\./ ? "." : "" ) . $suffix;
+    }
+    my @parts = ( $path, $file );
+
+    return ( wantarray ? @parts : join( "/", @parts ) );
 }
 
-# TODO: namespace clean this as well
-sub remove_index_file (_) {
-    my ($path) = @_;
+sub is_empty_dir (_) {
+    my ($dir) = @_;
+    croak "Invalid directory"
+        unless    $dir
+        and    -d $dir;
 
-    # Nothing to do if it doesn't exist.
-    return unless $path
-           and -f $path;
-
-    return prune_file $path;
+    my $empty = 1;
+    opendir( my $dh, $dir );
+    DIR_LOOP: while ( my $dir = readdir( $dh ) ) {
+        next DIR_LOOP if $dir =~ m{\A \.\.? \Z}x;
+        $empty = 0;
+        last DIR_LOOP;
+    }
+    closedir( $dh );
+    return $empty;
 }
 
 sub prune_file (_) {
@@ -685,21 +715,62 @@ sub prune_tree (_) {
     }
 }
 
-sub is_empty_dir (_) {
-    my ($dir) = @_;
-    croak "Invalid directory"
-        unless    $dir
-        and    -d $dir;
-
-    my $empty = 1;
-    opendir( my $dh, $dir );
-    DIR_LOOP: while ( my $dir = readdir( $dh ) ) {
-        next DIR_LOOP if $dir =~ m{\A \.\.? \Z}x;
-        $empty = 0;
-        last DIR_LOOP;
+sub read_index_file (_) {
+    my ($file) = @_;
+    croak "Invalid index file" unless -f $file;
+    # With the exact match confirmed, open the file and slurp the contents.
+    my %data;
+    open( my $fh, "<", $file ) or croak "Could not open index file for reading";
+    while (my $entry = <$fh>) {
+        chomp $entry;
+        $data{$entry} = 1;
     }
-    closedir( $dh );
-    return $empty;
+    close( $fh );
+    return keys %data;
+}
+
+sub remove_index_file (_) {
+    my ($path) = @_;
+
+    # Nothing to do if it doesn't exist.
+    return unless $path
+           and -f $path;
+
+    return prune_file $path;
+}
+
+sub write_index_file ($$@) {
+    my ($path, $merge, @uuids) = @_;
+    check_args(
+        args => {
+            path  => $path,
+            merge => $merge,
+            uuids => [ @uuids ],
+        },
+        must => {
+            path  => Str,
+            merge => Bool,
+            uuids => ArrayRef[Str], # is_uuid_string?
+        },
+    );
+
+    my ($storage_path, $filename) = $path =~ m{\A (.*) / (.*) \Z}x;
+
+    # Load the existing index, if any
+    # Add the new UUID to the list
+    # Write the list back to the index
+    mkpath( $storage_path ) unless -d $storage_path;
+    if ( $merge && -f $path ) {
+        push( @uuids, read_index_file( $path ) );
+    }
+    # Make sure the list is unique
+    my %data = map { $_ => 1 } @uuids;
+    open( my $fh, ">", $path );
+    # TODO: benchmarking:
+    # Is it better to iterate and write, or should this be a join instead?
+    print $fh "$_\n" for keys %data;
+    close( $fh );
+    return 1;
 }
 
 1;
