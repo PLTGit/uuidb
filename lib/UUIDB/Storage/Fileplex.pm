@@ -209,7 +209,7 @@ sub store_document {
     );
     mkpath( $document_path ) unless -d $document_path;
 
-    # TODO: locking, overwrite warnings (if the document has been updated more
+    # TODO: (f)locking, overwrite warnings (if the document has been updated more
     # recently than the local $document believes it has, or fails to match the
     # "current data" hash (which we don't actually have yet), etc., etc.
     open( my $fh, '>', "$document_path/$filename" );
