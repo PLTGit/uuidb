@@ -55,7 +55,7 @@ throws_ok {
             frob => Str,
         },
     )
-}   qr/wrong type/,
+}   qr/did not pass type constraint/,
     "Dies on undef required arg";
 
 lives_ok {
@@ -101,7 +101,7 @@ throws_ok {
             frob => Str,
         },
     )
-}   qr/wrong type/,
+}   qr/did not pass type constraint/,
     "Dies on wrong type 'should' arg";
 
 lives_ok {

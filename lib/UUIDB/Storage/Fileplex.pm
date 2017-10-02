@@ -8,14 +8,14 @@ UUIDB::Storage::Fileplex - File based document storage engine with index support
 
     # Instantiated by UUIDB as part of general database setup.
     my $uuidb = UUIDB->new(
-        document_type   => "JSON",
-        storage_type    => "Fileplex",
+        document_type   => "JSON",     # <= Whatever; we don't care.
+        storage_type    => "Fileplex", # <= that's us.
         storage_options => {
-            path => "/path/to/database",
+            path => "/path/to/database", # <= See "set_options"
         },
     );
 
-    # Et voila!  There's no a JSON document on disk, retrievable later via key.
+    # Et voila!  There's now a JSON document on disk, retrievable later via key.
     my $key = $uuidb->create({
         this => "is",
         some => "data",
@@ -425,7 +425,7 @@ sub clear_index {
         must => {
             index => [ Str, qr/\A[^\s]+/ ],
             value => [ Str, qr/\A[^\s]+/ ],
-            uuid   => [ Str ],
+            uuid  => [ Str ],
         },
     );
     $uuid = $self->SUPER::standardize_key( $uuid );

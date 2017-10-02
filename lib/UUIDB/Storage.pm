@@ -50,8 +50,6 @@ sub delete         { croak "The 'delete' method must be overridden in descendant
 sub store          { &store_document }
 sub get            { &get_document   }
 
-# TODO: standardize_key ?
-
 sub standardize_key {
     my ($self, $key) = @_;
 

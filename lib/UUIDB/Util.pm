@@ -1,8 +1,12 @@
 package UUIDB::Util;
 
-use Carp qw( carp croak );
-use Scalar::Util qw( blessed );
-use base qw( Exporter );
+use v5.10;
+use strict;
+use warnings;
+
+use Carp         qw( carp croak );
+use Scalar::Util qw( blessed    );
+use base         qw( Exporter   );
 
 our @EXPORT_OK = qw(
     check_args
@@ -42,17 +46,9 @@ sub check_args (%) {
                     die "Expected Type::Tiny, not " . ref( $check )
                         unless blessed $check
                         and (
-                            $check->isa( "Type::Tiny" )
-                            or (
-                                    $check->can( "check"        )
-                                and $check->can( "assert_valid" )
-                            )
+                               $check->isa( "Type::Tiny"   )
+                            or $check->can( "assert_valid" )
                         );
-
-                    die "Invalid $key, wrong type"
-                        unless $check->check( $data );
-
-                    # Dies on its own.
                     $check->assert_valid( $data );
                 }
             } elsif ( ref $check eq "CODE" ) {
@@ -118,14 +114,14 @@ sub check_args (%) {
     return 1;
 }
 
-sub is_loaded ($) {
+sub is_loaded (_) {
     my ($package_name) = @_;
     $package_name =~ s{::}{/}g;
     $package_name =~ s{(?<!\.pm)\Z}{.pm};
-    return grep { $_ eq $package_name } keys %INC;
+    return exists $INC{ $package_name };
 }
 
-sub safe_require ($) {
+sub safe_require (_) {
     my ($package_name) = @_;
     $package_name =~ s{::}{/}g;
     $package_name =~ s{(?<!\.pm)\Z}{.pm};

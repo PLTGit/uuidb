@@ -433,7 +433,7 @@ sub init_storage {
     if ( $storage_type =~ m/::/ ) {
         $class = $storage_type;
     }
-    safe_require $class;
+    safe_require $class unless is_loaded $class;
     return $class->new( %opts, db => $self  );
 }
 
