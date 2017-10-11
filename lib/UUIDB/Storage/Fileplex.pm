@@ -44,7 +44,7 @@ simple (but extensible) encoding scheme, paring off C<plex_chunk> pieces
 
 ...where the suffix value comes from the L<UUIDB::Document/suffix> value.
 
-TOOD: data storage
+TODO: data storage
 TODO: indexing
 
 =cut
@@ -70,7 +70,29 @@ use Types::Standard qw(
                         Str
                     );
 
+# Be tidy.
+use namespace::autoclean -also => [qw(
+    build_chunked_path
+    is_empty_dir
+    prune_file
+    prune_tree
+    read_index_file
+    remove_index_file
+    write_index_file
+)];
+
 extends qw( UUIDB::Storage );
+
+# Prototyes for internal consistency enforcement.  These belong to functions
+# which are scrubbed from the namespace, but that doesn't mean we're not
+# civilized about the composition of our internal routines.
+sub build_chunked_path ( $$$;$ );
+sub is_empty_dir       ( _     );
+sub prune_file         ( _     );
+sub prune_tree         ( _     );
+sub read_index_file    ( _     );
+sub remove_index_file  ( _     );
+sub write_index_file   ( $$@   );
 
 =head1 ATTRIBUTES
 
@@ -143,17 +165,6 @@ has index => (
     isa     => ArrayRef[Str],
     default => sub { [] },
 );
-
-# Prototyes for internal consistency enforcement.  These belong to functions
-# which are scrubbed from the namespace, but that doesn't mean we're not
-# civilized about the composition of our internal routines.
-sub build_chunked_path ( $$$;$ );
-sub is_empty_dir       ( _     );
-sub prune_file         ( _     );
-sub prune_tree         ( _     );
-sub read_index_file    ( _     );
-sub remove_index_file  ( _     );
-sub write_index_file   ( $$@   );
 
 sub set_options {
     my ($self, %opts) = @_;

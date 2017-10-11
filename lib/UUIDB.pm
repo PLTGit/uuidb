@@ -61,13 +61,13 @@ use warnings;
 
 =cut
 
-use Carp qw( carp croak );
-use Scalar::Util qw( blessed );
+use Carp            qw( carp croak                              );
+use namespace::autoclean;
+use Scalar::Util    qw( blessed                                 );
 use Types::Standard qw( Any Bool HashRef InstanceOf Map Ref Str );
-use UUID::Tiny qw( create_uuid_as_string UUID_V4 );
-use UUIDB::Util qw( check_args is_loaded safe_require );
+use UUID::Tiny      qw( create_uuid_as_string UUID_V4           );
+use UUIDB::Util     qw( check_args is_loaded safe_require       );
 
-# Makes some stuff easier.
 use Moo;
 
 has name => (
@@ -89,8 +89,9 @@ has document_handler => (
 );
 
 has storage => (
-    is  => 'rw',
-    isa => InstanceOf[qw( UUIDB::Storage )],
+    is        => 'rw',
+    isa       => InstanceOf[qw( UUIDB::Storage )],
+    predicate => 1,
 );
 
 # Not a fan of sub { sub {} }, but it's the best way to do what we're doing,
@@ -108,11 +109,10 @@ has uuid_generator => (
     default => sub { sub { create_uuid_as_string( UUID_V4 ) } },
 );
 
-
-# TODO: BUILDARGS validation
-
 sub BUILD {
     my ($self, $args) = @_;
+
+    # These methods provide their own validation.
     if ( $args->{document_type} ) {
         $self->document_type(
             $args->{document_type},
@@ -121,7 +121,6 @@ sub BUILD {
             : () ),
         );
     }
-    # TODO: document_options.
     if ( $args->{storage_type} ) {
         $self->storage_type(
             $args->{storage_type},
@@ -130,18 +129,15 @@ sub BUILD {
             : () ),
         );
     }
-    # TODO: storage_options, which should include something like "set uuid on
-    # the stored document's *data* object, so it keeps that around as well.  Or
-    # maybe that should be an option in the document handler, so that if
-    # configured, the ->uuiid() will have an "after" modifier which propagates
-    # to the data itself (if it knows how to do that, which can be any manner of
-    # callback).  Which reminds me, we really ought to introduce an event model
-    # here generally.
 }
 
 sub document_type {
     my ($self, $document_type, %opts) = @_;
-    # TODO: check_args
+
+    # If we're being called as an accessor, just give what we've got.
+    return $self->default_document_type
+        unless defined $document_type;
+
     check_args(
         args => {
             %opts,
@@ -179,6 +175,12 @@ sub document_type {
 
 sub storage_type {
     my ($self, $storage_type, %opts) = @_;
+
+    unless (defined $storage_type) {
+        return unless $self->has_storage;
+        return $self->storage->type;
+    }
+
     # TODO: check_args
     check_args(
         args => {
@@ -205,7 +207,7 @@ sub storage_type {
     }
 
     carp "Overwriting storage engine, existing documents will detach"
-        if $self->storage;
+        if $self->has_storage;
 
     $self->storage( $storage );
 }
@@ -218,6 +220,7 @@ sub create {
         $as_document,
     );
 }
+
 sub create_document {
     my ($self, $data, $type) = @_;
     return $self->create_typed(
@@ -226,6 +229,7 @@ sub create_document {
         1,
     );
 }
+
 sub create_typed {
     my ($self, $data, $type, $as_document) = @_;
     my $uuid = $self->uuid;
@@ -240,6 +244,7 @@ sub get {
     my ($self, $key) = @_;
     return $self->get_typed( $key, $self->default_document_type );
 }
+
 sub get_typed {
     my ($self, $key, $document_type, $as_document) = @_;
 
@@ -321,6 +326,7 @@ sub set {
         %opts,
     );
 }
+
 sub set_typed {
     my ($self, $key, $value, %opts) = @_;
 
@@ -436,7 +442,6 @@ sub init_storage {
     safe_require $class unless is_loaded $class;
     return $class->new( %opts, db => $self  );
 }
-
 
 1;
 

@@ -4,11 +4,13 @@ use v5.10;
 use strict;
 use warnings;
 
-use Carp qw( croak );
+use Carp            qw( croak );
 use Moo;
+use namespace::autoclean;
+use Scalar::Util    qw( blessed             );
 use Types::Standard qw( Bool InstanceOf Str );
-use UUID::Tiny qw( is_uuid_string );
-use UUIDB::Util qw( check_args );
+use UUID::Tiny      qw( is_uuid_string      );
+use UUIDB::Util     qw( check_args          );
 
 # TODO: POD, tests
 
@@ -29,22 +31,15 @@ before [qw( store_document delete )] => sub {
     croak "Cannot modify storage when readonly" if $self->readonly;
 };
 
-sub BUILD {
-    my ($self, $opts) = @_;
-    # Remove any of those settings which are attribute specific.
-    # Pass the remainder onto options.
-    $self->set_options( %$opts );
-}
-
 sub set_options {
     my ($self, %opts) = @_;
     # TODO: storage_options
 }
 
-sub store_document { croak "The 'store_document' method must be overridden in descendantclasses" }
-sub get_document   { croak "The 'get_document' method must be overridden in descendantclasses"   }
-sub exists         { croak "The 'exists' method must be overridden in descendantclasses"         }
-sub delete         { croak "The 'delete' method must be overridden in descendantclasses"         }
+sub store_document { croak "The 'store_document' method must be overridden in descendant classes" }
+sub get_document   { croak "The 'get_document' method must be overridden in descendant classes"   }
+sub exists         { croak "The 'exists' method must be overridden in descendant classes"         }
+sub delete         { croak "The 'delete' method must be overridden in descendant classes"         }
 
 # Simple aliases
 sub store          { &store_document }
@@ -59,6 +54,13 @@ sub standardize_key {
         and    is_uuid_string( $key );
 
     return lc $key;
+}
+
+sub type {
+    my ($self) = @_;
+    my $type = blessed $self;
+    $type =~ s/^UUIDB::Storage:://;
+    return $type;
 }
 
 1;
