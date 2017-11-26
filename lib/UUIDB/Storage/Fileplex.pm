@@ -205,7 +205,9 @@ sub store_document {
     my $data = $document->frozen;
     # TODO: if $data is not defined, delete an existing record by the same key
     # (since undef and deleted are equivalent).  If it does not exist, simply
-    # return undef, since there's nothing to store.
+    # return undef, since there's nothing to store.  This should be optional
+    # behavior, because failures in data handling elsewhere might become very
+    # destructive otherwise.
 
     my ($document_path, $filename) = $self->compose_document_path(
         $document->uuid,
@@ -213,15 +215,23 @@ sub store_document {
         1,
     );
 
-    # TODO: overwrite warnings (if the document has been updated more recently
-    # than the local $document believes it has, or fails to match the "current
-    # data" hash (which we don't actually have yet), etc., etc.
-
     # "assert" will auto create the path for us.
     my $docfile = io->file("$document_path/$filename")->assert->lock;
+    if (my $ctime = $docfile->ctime) {
+        if (
+               $document->meta->{ctime}
+            && $document->meta->{ctime} < $ctime
+        ) {
+            # TODO: overwrite warnings (if the document has been updated more
+            # recently than the local $document believes it has, or fails to
+            # match the "current data" hash (which we don't actually have yet),
+            # etc., etc.  Optionally carp, return false.
+        }
+    }
     $docfile->open(">");
     $docfile->print( $data );
     $docfile->close();
+    $document->meta->{ctime} = $docfile->ctime;
 
     # ALSO TODO: process indexes.  In fact, process those in advance, and do all
     # the file flushing at once.
@@ -260,7 +270,10 @@ sub get_document {
     return unless $path;
 
     # Lock, open, read, close.
-    my $data = io->file($path)->lock->all;
+    my $data_file = io->file($path)->lock;
+    my $ctime = $data_file->ctime;
+    my $data  = $data_file->all;
+    $data_file->close; # and implicit unlock
 
     my $document = $document_handler->new_from_data(
         $document_handler->thaw( $data )
@@ -268,6 +281,8 @@ sub get_document {
     $document->uuid( $uuid )
         unless $document->uuid()
         and    $document->uuid() eq $uuid;
+
+    # $document->meta->{ctime} = $ctime;
 
     return $document;
 }
@@ -301,6 +316,7 @@ sub delete {
         # somehow corrupted, just emit a small warning and be on our way.
         my @indexes  = @{ $self->index };
         my $document = eval { $self->get_document( $uuid ) };
+        carp $@ if $@ && $warnings; # TODO: Keep?
         if ( @indexes && !$document ) {
             carp "Unable to load document during delete, indexes will not be purged";
         } elsif ( scalar @indexes ) {
