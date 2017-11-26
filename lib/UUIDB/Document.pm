@@ -5,10 +5,14 @@ use strict;
 use warnings;
 
 use Moo;
-use Carp qw( carp croak );
-use Types::Standard qw( Any ArrayRef Bool InstanceOf Maybe Ref Str );
-use Scalar::Util qw( blessed );
-use UUIDB::Util  qw( check_args );
+use Carp            qw( carp croak );
+use Scalar::Util    qw( blessed    );
+use Types::Standard qw(
+    Any  ArrayRef Bool
+    HashRef InstanceOf
+    Maybe   Ref    Str
+);
+use UUIDB::Util     qw( check_args );
 
 # TODO: POD, tests
 has db => (
@@ -19,6 +23,15 @@ has db => (
 has data => (
     is => "rw",
     isa => Any,
+);
+
+# Free-form hash for information *about* the document, but which is not stored
+# along with it; things like timestamps, or storage advice (as used by
+# L<UUIDB::Storage> members).
+has meta => (
+    is      => "rw",
+    isa     => HashRef,
+    default => sub { {} },
 );
 
 # TODO: is_uuid_string as a constraint here.

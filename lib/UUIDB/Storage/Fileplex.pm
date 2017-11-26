@@ -44,9 +44,6 @@ simple (but extensible) encoding scheme, paring off C<plex_chunk> pieces
 
 ...where the suffix value comes from the L<UUIDB::Document/suffix> value.
 
-TODO: data storage
-TODO: indexing
-
 =cut
 
 use v5.10;
@@ -59,16 +56,13 @@ use Moo;
 use Digest::MD5     qw( md5_hex    );
 use File::Find      qw( find       );
 use File::Path      qw( mkpath     );
+use IO::All         qw( -utf8      );
 use UUIDB::Util     qw( check_args );
 use Types::Standard qw(
-                        ArrayRef
-                        Bool
-                        InstanceOf
-                        Int
-                        Maybe
-                        Ref
-                        Str
-                    );
+    ArrayRef  Bool
+    InstanceOf Int
+    Maybe  Ref Str
+);
 
 # Be tidy.
 use namespace::autoclean -also => [qw(
@@ -103,7 +97,7 @@ sub write_index_file   ( $$@   );
 has data_path => (
     is      => "rw",
     isa     => Str,
-    default => sub { "data" },
+    default => "data",
 );
 
 has path => (
@@ -114,43 +108,43 @@ has path => (
 has plex_chunks => (
     is      => "rw",
     isa     => Int,
-    default => sub { 3 },
+    default => 3,
 );
 
 has plex_chunk_length => (
     is      => "rw",
     isa     => Int,
-    default => sub { 2 },
+    default => 2,
 );
 
 has index_chunks => (
     is      => "rw",
     isa     => Int,
-    default => sub { 3 },
+    default => 3,
 );
 
 has index_chunk_length => (
     is      => "rw",
     isa     => Int,
-    default => sub { 2 },
+    default => 2,
 );
 
 has index_path => (
     is      => "rw",
     isa     => Str,
-    default => sub { "index" },
+    default => "index",
 );
 
 has index_suffix => (
     is      => "rw",
     isa     => Str,
-    default => sub { "idx" },
+    default => "idx",
 );
 
 # Can be used to introduce higher local variability in those sequences
 # used for managing pathing.
 #
-# It is *highly* recommended to use the "propogate_uuid" setting in
+# It is *highly* recommended to use the "propagate_uuid" setting in
 # UUIDB::Document options when this is enabled, since otherwise the reverse
 # association from hashed key to UUID is effectively impossible to determine.
 has rehash_key => (
@@ -218,16 +212,16 @@ sub store_document {
         $document->suffix,
         1,
     );
-    mkpath( $document_path ) unless -d $document_path;
 
-    # TODO: (f)locking, overwrite warnings (if the document has been updated more
-    # recently than the local $document believes it has, or fails to match the
-    # "current data" hash (which we don't actually have yet), etc., etc.
-    open( my $fh, '>', "$document_path/$filename" );
-    print $fh $data;
-    close( $fh );
+    # TODO: overwrite warnings (if the document has been updated more recently
+    # than the local $document believes it has, or fails to match the "current
+    # data" hash (which we don't actually have yet), etc., etc.
 
-    # TODO: error checking on the above
+    # "assert" will auto create the path for us.
+    my $docfile = io->file("$document_path/$filename")->assert->lock;
+    $docfile->open(">");
+    $docfile->print( $data );
+    $docfile->close();
 
     # ALSO TODO: process indexes.  In fact, process those in advance, and do all
     # the file flushing at once.
@@ -265,14 +259,15 @@ sub get_document {
     my $path = $self->exists( $uuid, $document_handler->suffix, 1 );
     return unless $path;
 
-    open( my $fh, "<", $path ) or croak "Could not open document file for reading";
-    my @data = <$fh>;
-    close( $fh );
+    # Lock, open, read, close.
+    my $data = io->file($path)->lock->all;
 
     my $document = $document_handler->new_from_data(
-        $document_handler->thaw( join( "", @data ) )
+        $document_handler->thaw( $data )
     );
-    $document->uuid( $uuid );
+    $document->uuid( $uuid )
+        unless $document->uuid()
+        and    $document->uuid() eq $uuid;
 
     return $document;
 }
@@ -500,15 +495,24 @@ sub standardize_index_name {
 }
 
 # Find an index entry
+# This is a lot of conditional args. It's likely only the first 2 are going to
+# be used by any consuming program, but we should probably think about how we
+# want to handle this a little more cleanly.
 sub search_index {
-    my ($self, $index, $starts_with, $exact_match, $as_file) = @_;
+    my (
+        $self,
+        $index,
+        $starts_with,
+        $exact_match,
+        $as_path,
+    ) = @_;
 
     check_args(
         args => {
             index       => $index,
             starts_with => $starts_with,
             exact_match => $exact_match,
-            as_file     => $as_file,
+            as_path     => $as_path,
         },
         must => {
             index       => [ Str, qr/\A[^\s]+/ ],
@@ -517,7 +521,7 @@ sub search_index {
         },
         can => {
             exact_match => Bool,
-            as_file     => Bool,
+            as_path     => Bool,
         },
     );
 
@@ -543,7 +547,7 @@ sub search_index {
         return unless -f $index_file;
 
         # Found? Return the path, if that's what they want.
-        return $index_file if $as_file;
+        return $index_file if $as_path;
 
         # Return the name of the identified index.
         push @matches, $filename;
@@ -731,12 +735,12 @@ sub read_index_file (_) {
     croak "Invalid index file" unless -f $file;
     # With the exact match confirmed, open the file and slurp the contents.
     my %data;
-    open( my $fh, "<", $file ) or croak "Could not open index file for reading";
-    while (my $entry = <$fh>) {
-        chomp $entry;
-        $data{$entry} = 1;
+    my $index = io->file($file)->chomp->lock;
+    $index->open("<");
+    while (my $entry = $index->getline) {
+        $data{$entry} = 1; # dedupe
     }
-    close( $fh );
+    $index->close();
     return keys %data;
 }
 
@@ -765,22 +769,23 @@ sub write_index_file ($$@) {
         },
     );
 
+    # TODO: Make this escape-character safe, just in case.  Even though we know
+    # *our* files are OK, we don't want to create problems elsewhere.
     my ($storage_path, $filename) = $path =~ m{\A (.*) / (.*) \Z}x;
 
     # Load the existing index, if any
     # Add the new UUID to the list
     # Write the list back to the index
-    mkpath( $storage_path ) unless -d $storage_path;
+    my $index = io->file( $path )->assert->lock;
     if ( $merge && -f $path ) {
         push( @uuids, read_index_file( $path ) );
     }
     # Make sure the list is unique
     my %data = map { $_ => 1 } @uuids;
-    open( my $fh, ">", $path );
+    $index->open(">");
     # TODO: benchmarking:
-    # Is it better to iterate and write, or should this be a join instead?
-    print $fh "$_\n" for keys %data;
-    close( $fh );
+    $index->println($_) for keys %data;
+    $index->close();
     return 1;
 }
 

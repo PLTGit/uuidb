@@ -1,33 +1,33 @@
 package UUIDB;
 
-use v5.10;
-use strict;
-use warnings;
-
 =head1 NAME
 
+UUIDB - A UUID key based document storage system.
+
 =head1 VERSION
+
+0.1
 
 =head1 SYNOPSIS
 
     my $uuidb = UUIDB->new(
-        name          => "Test",
-        document_type => "JSON",
-        storage_type  => "Memory",
+        name          => "Test",   # Helpful for differentiating multiple DBs.
+        document_type => "JSON",   # Type of data serialization to use;
+        storage_type  => "Memory", # Engine (and location) for storing it.
     );
 
     # JSON only because that's what we're demonstrating; could be anything.
     my %data = (
         any => "kind",
-        of  => "JSON",
-        serializable => [qw(
-            data
-        )],
+        of  => {
+            serializable => [qw(
+                data and stuff
+            )],
+        }
     );
 
-    # Create it
+    # Create it; $key is now a UUID string.
     my $key = $uuidb->create( \%data );
-    say "Data exists" if $uuidb->exists( $key );
 
     # Read it
     my %data_copy = %{ $uuidb->get( $key ) };
@@ -45,9 +45,9 @@ use warnings;
     # Slightly more OO version
     # Create it
     my $document = $uuidb->create_document( \%data );
-    $key = $document->uuid();
+    $key = $document->uuid(); # Implicit store.
     $document->data->{still} = "simple data";
-    $document->save(); # or $document->update();
+    $document->save(); # or $document->update(); explicit store.
 
     if (my $document_copy = $uuidb->get_document( $key )) {
         is_deeply(
@@ -57,9 +57,28 @@ use warnings;
         );
     }
 
+=cut
+
 =head1 DESCRIPTION
 
+UUIDB is a UUID (frequently called "GUID"s as well) based NoSQL document store
+for Perl, ideal for graph storage, JSON DBs, etc.
+
+Usage is as simple as loading the library and configuring the object - no other
+processes or servers required (unless your chosen back-end is a DB engine or
+similar).
+
+Because unique identifiers are used for creating and managing keys, multiple
+concurrent read access scales exceptionally well.  Concurrent write access is
+fairly safe as well - definitely safe in the form of addition, I<mostly> safe
+for modifications depending on the storage engine in use (see L<UUIDB::Storage>
+for more information).
+
 =cut
+
+use v5.10;
+use strict;
+use warnings;
 
 use Carp            qw( carp croak                              );
 use namespace::autoclean;
