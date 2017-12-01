@@ -88,7 +88,10 @@ sub read_index_file    ( _     );
 sub remove_index_file  ( _     );
 sub write_index_file   ( $$@   );
 
-=head1 ATTRIBUTES
+=head1 OPTION ATTRIBUTES
+
+These attributes are available to be set as options during instantiation, and
+affect the configuration and behavior of file storage, indexing, etc.
 
 =cut
 
@@ -141,17 +144,45 @@ has index_suffix => (
     default => "idx",
 );
 
-# Can be used to introduce higher local variability in those sequences
-# used for managing pathing.
-#
-# It is *highly* recommended to use the "propagate_uuid" setting in
-# UUIDB::Document options when this is enabled, since otherwise the reverse
-# association from hashed key to UUID is effectively impossible to determine.
+has overwrite_newer => (
+    is      => "rw",
+    isa     => Bool,
+    default => 0,
+);
+
+=head2 rehash_key
+
+Advanced setting; boolean or code reference:
+
+    # ...
+        rehash_key => 1, # Turn on, use default rehash algorithm
+        rehash_key => \&some_code, # Turn on, use code to do rehashing.
+    # ...
+
+Useful when we need to take the document's UUID and turn it into something with
+greater variability (e.g., when using sequential or fixed-prefix UUID providers)
+since we rely on differentiating the first few bytes of the key for the shard
+storage management (plexing; see L</DESCRIPTION>).
+
+It is I<highly> recommended to use the L<UUIDB::Document/propagate_uuid>
+setting when this is enabled, since otherwise the reverse association from
+hashed key to UUID is effectively impossible to determine (meaning, if we don't
+store the document's UUID in the data of the document, it's effectively
+orphaned).
+
+=cut
+
 has rehash_key => (
     is      => 'rw',
     isa     => Maybe[Bool, Ref[qw( CODE )]],
-    default => sub { 0 },
+    default => 0,
 );
+
+=head1 ATTRIBUTES
+
+These attributes are for the use and operation of the storage engine itself.
+
+=cut
 
 # Should this be an array or a hash?  Or a map, of some kind?
 has index => (
@@ -203,11 +234,10 @@ sub store_document {
     $self->init_store();
 
     my $data = $document->frozen;
-    # TODO: if $data is not defined, delete an existing record by the same key
-    # (since undef and deleted are equivalent).  If it does not exist, simply
-    # return undef, since there's nothing to store.  This should be optional
-    # behavior, because failures in data handling elsewhere might become very
-    # destructive otherwise.
+    unless ($data) {
+        carp "No document content; nothing to store (did you mean 'delete'?)";
+        return;
+    }
 
     my ($document_path, $filename) = $self->compose_document_path(
         $document->uuid,
@@ -217,15 +247,20 @@ sub store_document {
 
     # "assert" will auto create the path for us.
     my $docfile = io->file("$document_path/$filename")->assert->lock;
+    # TODO: keep a "last error" string around, so people can actually double
+    # check the message instead of trying to trap the signal?
     if (my $ctime = $docfile->ctime) {
         if (
                $document->meta->{ctime}
             && $document->meta->{ctime} < $ctime
         ) {
-            # TODO: overwrite warnings (if the document has been updated more
-            # recently than the local $document believes it has, or fails to
-            # match the "current data" hash (which we don't actually have yet),
-            # etc., etc.  Optionally carp, return false.
+            # Overwrite warnings (if the document has been updated more recently
+            # than the local $document copy believes it has.
+            unless ( $self->overwrite_newer ) {
+                carp "Not overwriting document with newer timestamp than ours";
+                return;
+            }
+            carp "Overwriting record with newer timestamp than ours";
         }
     }
     $docfile->open(">");
@@ -282,7 +317,7 @@ sub get_document {
         unless $document->uuid()
         and    $document->uuid() eq $uuid;
 
-    # $document->meta->{ctime} = $ctime;
+    $document->meta->{ctime} = $ctime;
 
     return $document;
 }

@@ -48,7 +48,8 @@ UUIDB::Document::Raw  <= Whatever you give it.
 UUIDB::Document::Typed ? (need a Moo(se) intermediary for instantiating objects)
 
 
-- [ ] Add timestamp information to document meta and provide warnings on incongruent timestamps?
+- [X] Add timestamp information to document meta and provide warnings on
+    incongruent timestamps?
 
 - [ ] ShardedKV::Storage::UUIDB
 - [ ] Tutorial POD
