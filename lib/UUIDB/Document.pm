@@ -21,8 +21,9 @@ has db => (
 );
 
 has data => (
-    is => "rw",
-    isa => Any,
+    is        => "rw",
+    isa       => Any,
+    predicate => 1,
 );
 
 # Free-form hash for information *about* the document, but which is not stored
@@ -44,13 +45,13 @@ has uuid => (
 has propagate_uuid => (
     is      => "rw",
     isa     => Maybe[Bool, Ref[qw( CODE )]],
-    default => sub { 0 },
+    default => 0,
 );
 
 has fatal_unknown_extracts => (
     is      => "rw",
     isa     => Bool,
-    default => sub { 0 },
+    default => 0,
 );
 
 sub BUILD {
@@ -92,6 +93,14 @@ sub type   { croak "The 'type' method must be overridden in descendant classes" 
 sub freeze { croak "The 'freeze' method must be overridden in descendant classes" }
 sub thaw   { croak "The 'thaw' method must be overridden in descendant classes"   }
 
+sub delete {
+    my ($self) = @_;
+    croak "Unable to delete document (no key)" unless $self->uuid();
+    croak "No UUIDB" unless $self->db;
+    $self->db->delete( $self->uuid() );
+}
+sub remove { shift->delete( @_ ) } # Simple alias
+
 # Given a field specification, return a corresponding value from our data.
 # Assumes the internal data representation is a hash.
 # TODO: See if there's some equivalent for DeepHash navigation out there? Or
@@ -114,13 +123,11 @@ sub extract {
     my %return;
     foreach my $field ( @fields ) {
         # Is our data an object of sorts, with a named accessor for the field?
-        if (
-            blessed $self->data
-        ) {
+        if ( blessed $self->data ) {
             if ( $self->data->can( $field ) ) {
                 $return{ $field } = $self->data->$field();
             } elsif ( $self->fatal_unknown_extracts ) {
-                croak "Don't know how to extract field from object";
+                croak "Don't know how to extract field '$field' from object";
             }
         } elsif ( ref( $self->data ) eq 'HASH' ) {
             $return{ $field } = $self->data->{ $field };
@@ -147,10 +154,16 @@ sub new_from_data {
     # for propagation.  Doing this with a minimum overhead in memory and
     # performance would also be nice; especially since handing around a lot of
     # refs is a *great* way to cause memory leaks.
+    my $uuid;
+    $uuid = $self->pull_uuid_from_data( $data )
+        if  $data
+        and $self->propagate_uuid;
+
     return $class->new(
-        db   => $self->db,
-        data => $data,
+        db             => $self->db,
+        data           => $data,
         propagate_uuid => $self->propagate_uuid,
+        ($uuid ? (uuid => $uuid) : ()),
     );
 }
 
@@ -174,6 +187,33 @@ sub update {
     carp "Document does not yet have a UUID, a new one will be assigned"
         unless $self->uuid();
     return $self->save();
+}
+
+# TODO: POD. When/where/how to use.
+sub copy_uuid_to_data {
+    my ($self, $uuid, $data) = @_;
+    $uuid ||= $self->uuid();
+    $data ||= $self->data();
+
+    # TODO: validate UUID?
+    croak "Data not set; cannot copy UUID to it." unless $data;
+    $self->data->{uuid} = $uuid;
+}
+
+sub clear_uuid_from_data {
+    my ($self, $data) = @_;
+    $data ||= $self->data;
+    return unless $data;
+    delete $data->{uuid} if exists $data->{uuid};
+}
+
+# Note that we do not then call $self->uuid($uuid) if ($self->propagate_uuid());
+# because we don't want to risk recursion cases.
+sub pull_uuid_from_data {
+    my ($self, $data) = @_;
+    $data ||= $self->data;
+    return unless $data;
+    return $data->{uuid} if exists $data->{uuid}; # avoid autovivification
 }
 
 1;

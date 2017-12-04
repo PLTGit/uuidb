@@ -43,9 +43,9 @@ UUIDB - A UUID key based document storage system.
     say "Nope" unless $uuidb->exists( $key );
 
     # Slightly more OO version
-    # Create it
+    # Create it (and save it)
     my $document = $uuidb->create_document( \%data );
-    $key = $document->uuid(); # Implicit store.
+    $key = $document->uuid();
     $document->data->{still} = "simple data";
     $document->save(); # or $document->update(); explicit store.
 
@@ -81,12 +81,12 @@ use strict;
 use warnings;
 
 use Carp            qw( carp croak                              );
-use namespace::autoclean;
 use Scalar::Util    qw( blessed                                 );
 use Types::Standard qw( Any Bool HashRef InstanceOf Map Ref Str );
 use UUID::Tiny      qw( create_uuid_as_string UUID_V4           );
 use UUIDB::Util     qw( check_args is_loaded safe_require       );
 
+use namespace::autoclean;
 use Moo;
 
 has name => (
@@ -94,7 +94,6 @@ has name => (
     isa => Str,
 );
 
-# TODO: validation
 has default_document_type => (
     is      => 'rw',
     isa     => Str,
@@ -165,7 +164,7 @@ sub document_type {
         must => {
             document_type => Str,
         },
-        can => "*"
+        can => "*", # Deep checking will happen in the document class
     );
 
     if ( lc $document_type eq "custom" ) {
@@ -196,18 +195,16 @@ sub storage_type {
     my ($self, $storage_type, %opts) = @_;
 
     unless (defined $storage_type) {
-        return unless $self->has_storage;
-        return $self->storage->type;
+        return $self->has_storage ? $self->storage->type : undef;
     }
 
-    # TODO: check_args
     check_args(
         args => {
             %opts,
             storage_type => $storage_type,
         },
         must => { storage_type => Str },
-        can  => "*", # Deep checking will happen in the storage engine itself
+        can  => "*", # Deep checking will happen in the storage class
     );
 
     my $storage;
@@ -226,7 +223,8 @@ sub storage_type {
     }
 
     carp "Overwriting storage engine, existing documents will detach"
-        if $self->has_storage;
+        if  $self->has_storage
+        and $storage != $self->storage; # Rare, but not worth making noise.
 
     $self->storage( $storage );
 }

@@ -4,22 +4,24 @@ use v5.10;
 use strict;
 use warnings;
 
+use YAML::XS qw( Dump Load );
+use namespace::autoclean;
+
 use Moo;
-use YAML::XS;
 
 # TODO: POD, tests
 extends qw( UUIDB::Document );
 
-sub type { "JSON" }
+sub type { "YAML" }
 
 sub freeze {
     my ($self, $data) = @_;
-    return encode_json( $data );
+    return Dump( $data );
 }
 
 sub thaw {
     my ($self, $frozen) = @_;
-    return decode_json( $frozen );
+    return Load( $frozen );
 }
 
 1;

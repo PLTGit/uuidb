@@ -313,6 +313,11 @@ sub get_document {
     my $document = $document_handler->new_from_data(
         $document_handler->thaw( $data )
     );
+    # The document creation might be taking care of this for us, but if UUID
+    # propagation isn't turned on we'll need to do this manually.  Would be nice
+    # if it was more automatic than this, but there's a fine line between
+    # "magic" and "too much magic what were you thinking".  Maybe we'll add an
+    # event model later.
     $document->uuid( $uuid )
         unless $document->uuid()
         and    $document->uuid() eq $uuid;
