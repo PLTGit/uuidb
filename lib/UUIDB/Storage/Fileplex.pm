@@ -55,7 +55,6 @@ use Carp qw( carp croak );
 use Moo;
 use Digest::MD5     qw( md5_hex    );
 use File::Find      qw( find       );
-use File::Path      qw( mkpath     );
 use IO::All         qw( -utf8      );
 use UUIDB::Util     qw( check_args );
 use Types::Standard qw(
@@ -82,8 +81,8 @@ extends qw( UUIDB::Storage );
 # civilized about the composition of our internal routines.
 sub build_chunked_path ( $$$;$ );
 sub is_empty_dir       ( _     );
-sub prune_file         ( _     );
-sub prune_tree         ( _     );
+sub prune_file         ( $;$   );
+sub prune_tree         ( $;$   );
 sub read_index_file    ( _     );
 sub remove_index_file  ( _     );
 sub write_index_file   ( $$@   );
@@ -191,35 +190,27 @@ has index => (
     default => sub { [] },
 );
 
-sub set_options {
-    my ($self, %opts) = @_;
-    # TODO: storage_options
-    # path (location of the directory in which to build)
-    # indexes => {
-    #    field_name => sub { qw( which knows how to get the "name" value from a Document }
-    # }
-}
+has initialized => (
+    is      => 'rwp',
+    isa     => Bool,
+    default => 0,
+);
 
 sub init_check {
     my ($self) = @_;
+
+    return if $self->initialized;
+
     croak "Path not set" unless $self->path;
     unless ( -d $self->path ) {
-        croak "Invalid path (not found)";
+        croak "Invalid path (not found)"
+            unless io->dir( $self->path )->mkpath;
     }
     croak "Path not writable"
-        unless -d $self->path # Also catches failures to auto-create above
-        and    -w $self->path
+        unless -w $self->path
         and      !$self->readonly;
-}
 
-sub init_store {
-    my ($self) = @_;
-    $self->init_check();
-
-    mkpath( $_ ) for grep { ! -d } (
-        $self->storage_path( $self->data_path  ),
-        $self->storage_path( $self->index_path ),
-    );
+    $self->_set_initialized( 1 );
 }
 
 sub store_document {
@@ -231,10 +222,9 @@ sub store_document {
     );
 
     $self->init_check();
-    $self->init_store();
 
     my $data = $document->frozen;
-    unless ($data) {
+    unless (defined $data) {
         carp "No document content; nothing to store (did you mean 'delete'?)";
         return;
     }
@@ -267,21 +257,10 @@ sub store_document {
     $docfile->print( $data );
     $docfile->close();
     $document->meta->{ctime} = $docfile->ctime;
+    $document->meta->{in_storage} = 1;
 
-    # ALSO TODO: process indexes.  In fact, process those in advance, and do all
-    # the file flushing at once.
-    my $uuid    = $document->uuid;
-    my @indexes = @{ $self->index };
-    if ( scalar @indexes ) {
-        my $values = $document->extract( @indexes );
-        DOC_INDEX: foreach my $index ( @indexes ) {
-            my $value = $$values{ $index };
-            next DOC_INDEX unless defined $value
-                           and    length  $value;
-
-            $self->save_index( $index, $value, $uuid );
-        }
-    }
+    # Process indexes.
+    $self->update_indexes( $document );
 
     return $document->uuid();
 }
@@ -323,6 +302,7 @@ sub get_document {
         and    $document->uuid() eq $uuid;
 
     $document->meta->{ctime} = $ctime;
+    $document->meta->{in_storage} = 1;
 
     return $document;
 }
@@ -360,18 +340,11 @@ sub delete {
         if ( @indexes && !$document ) {
             carp "Unable to load document during delete, indexes will not be purged";
         } elsif ( scalar @indexes ) {
-            my $values = $document->extract( @indexes );
-            CLEAN_INDEX: foreach my $index ( @indexes ) {
-                my $value = $$values{ $index };
-                next CLEAN_INDEX unless defined $value
-                                 and    length  $value;
-
-                $self->clear_index( $index, $value, $uuid );
-            }
+            $self->update_indexes( $document, 1 ); # "clear all" mode
         }
 
         # Remove the document
-        return prune_file $path;
+        return prune_file $path, $self->path;
     } elsif ( $warnings ) {
         carp "Document not found, nothing deleted";
     }
@@ -498,6 +471,39 @@ sub clear_index {
             write_index_file( $index_file, 0, @uuids );
         } else {
             remove_index_file( $index_file );
+        }
+    }
+}
+
+sub update_indexes {
+    my ($self, $document, $clear_all) = @_;
+    check_args(
+        args => {
+            document  => $document,
+            clear_all => $clear_all,
+        },
+        must => { document  => InstanceOf[qw( UUIDB::Document )] } ,
+        can  => { clear_all => Bool },
+    );
+
+    my $uuid    = $document->uuid;
+    my @indexes = @{ $self->index };
+    if ( scalar @indexes ) {
+        # TODO: This is a slow approach; might be better if we built a batch
+        # index update process.
+        my $values = $document->extract( @indexes );
+        DOC_INDEX: foreach my $index ( @indexes ) {
+            my $value = $$values{ $index };
+            # If there's something in the index field, save it.
+            # If not, or we're in clearing mode, clear it.
+            my $mode = (
+                !$clear_all
+                && defined $value
+                && length  $value
+                ?  'save_index'
+                :  'clear_index'
+            );
+            $self->$mode( $index, $value, $uuid );
         }
     }
 }
@@ -756,20 +762,20 @@ sub is_empty_dir (_) {
     return $empty;
 }
 
-sub prune_file (_) {
-    my ($path) = @_;
+sub prune_file ($;$) {
+    my ($path, $stop) = @_;
 
     unlink $path or carp "Could not remove file";
 
     # prune the directory tree if that was the only file in it (and so on)
     $path =~ s{/[^/]+\Z}{};
-    prune_tree( $path );
+    prune_tree( $path, $stop );
 
     return 1;
 }
 
-sub prune_tree (_) {
-    my ($dir) = @_;
+sub prune_tree ($;$) {
+    my ($dir, $stop) = @_;
 
     croak "Invalid directory"
         unless    $dir
@@ -780,6 +786,7 @@ sub prune_tree (_) {
     PRUNE: while (1) {
         # Technically we could just do the rmdir instead of checking for
         # emptiness first, but we're trying to be nice.
+        last PRUNE if $stop and $loop_dir eq $stop;
         last PRUNE unless is_empty_dir $loop_dir;
         last PRUNE unless rmdir        $loop_dir;
         $loop_dir =~ s{\A (.*)/.* \Z}{$1}x;
@@ -829,9 +836,9 @@ sub write_index_file ($$@) {
     # *our* files are OK, we don't want to create problems elsewhere.
     my ($storage_path, $filename) = $path =~ m{\A (.*) / (.*) \Z}x;
 
-    # Load the existing index, if any
-    # Add the new UUID to the list
-    # Write the list back to the index
+    # 1. Load the existing index, if any
+    # 2. Add the new UUID to the list
+    # 3. Write the list back to the index
     my $index = io->file( $path )->assert->lock;
     if ( $merge && -f $path ) {
         push( @uuids, read_index_file( $path ) );

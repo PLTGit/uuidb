@@ -42,8 +42,9 @@ sub exists         { croak "The 'exists' method must be overridden in descendant
 sub delete         { croak "The 'delete' method must be overridden in descendant classes"         }
 
 # Simple aliases
-sub store          { &store_document }
 sub get            { &get_document   }
+sub remove         { &delete         }
+sub store          { &store_document }
 
 sub standardize_key {
     my ($self, $key) = @_;
