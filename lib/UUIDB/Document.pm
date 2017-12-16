@@ -136,7 +136,7 @@ sub extract {
         }
     }
 
-    return \%return;
+    return wantarray ? %return : \%return;
 }
 
 # This is the frozen version of our own data (if we're in instance mode)

@@ -51,5 +51,8 @@ UUIDB::Document::Typed ? (need a Moo(se) intermediary for instantiating objects)
 - [X] Add timestamp information to document meta and provide warnings on
     incongruent timestamps?
 
+YOU ARE HERE:
+- [X] Middle of adding "indexed" metadata for updating and pruning indexes.
+
 - [ ] ShardedKV::Storage::UUIDB
 - [ ] Tutorial POD

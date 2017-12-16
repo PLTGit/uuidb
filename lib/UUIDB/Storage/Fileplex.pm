@@ -79,6 +79,7 @@ extends qw( UUIDB::Storage );
 # Prototyes for internal consistency enforcement.  These belong to functions
 # which are scrubbed from the namespace, but that doesn't mean we're not
 # civilized about the composition of our internal routines.
+
 sub build_chunked_path ( $$$;$ );
 sub is_empty_dir       ( _     );
 sub prune_file         ( $;$   );
@@ -92,9 +93,16 @@ sub write_index_file   ( $$@   );
 These attributes are available to be set as options during instantiation, and
 affect the configuration and behavior of file storage, indexing, etc.
 
-=cut
+=head2 data_path
 
-# TODO: POD
+    data_path => "data", # Optional, defaults to "data"
+
+Simple string, directory name: specifies where under the Fileplex path the
+documents will be stored.  Since this becomes part of the path itself, it should
+be set to something compatible with the filesystem.  This directory will be
+created if it does not exist.  See also L</path>.
+
+=cut
 
 has data_path => (
     is      => "rw",
@@ -102,28 +110,65 @@ has data_path => (
     default => "data",
 );
 
-has path => (
-    is => "rw",
-    isa => Str,
+=head2 index
+
+    # ...
+    index => [ "name", "geo" ], # Optional, must be an arrayref of strings
+    # ...
+
+    # With that storage_option(s) set during instantiation, we can now do the
+    # following:
+
+    my @documents = $uuidb->storage->search_index( "name", "Inigo" );
+    # If there are any documents for which $document->extract("name") yields a
+    # value beginning with "Inigo", those will now be in the @documents
+    # collection returned from the search. Tada!
+
+Probably the most significant additional feature of this storage engine are the
+indexes, which are used to retrieve documents by field values other than their
+UUID.  The strings here correspond to named values which can be retrieved from
+L<UUIDB::Document> objects by use of the L<UUIDB::Document#extract> method.  The
+index name and the extracted value will form a key-value pair and be written in
+and inverse lookup array using fairly rudimentary association.
+
+Which is a good segue into Limitations: these really are simple inverse lookups,
+and do not allow for full text search or even mid-value searching.  Inverse
+lookups I<can> match on partial values, but only based on the beginning of the
+value.  Stored values are case sensitive, and in fact need not even be string
+data - any data type (and/or encoding) is supported in both the index name and
+the value for that index from the document.  There are no limitations on length,
+but extremely long values don't make much sense for indexing in the first place
+since you only need something sufficiently differentiated to be identifiable.
+
+See also L</search_index>.
+
+=cut
+
+has index => (
+    is      => 'rw',
+    isa     => ArrayRef[Str],
+    default => sub { [] },
 );
 
-has plex_chunks => (
-    is      => "rw",
-    isa     => Int,
-    default => 3,
-);
 
-has plex_chunk_length => (
-    is      => "rw",
-    isa     => Int,
-    default => 2,
-);
+=head2 index_chunks
+
+    index_chunks => 3, # Optional, defaults to 3
+
+=cut
 
 has index_chunks => (
     is      => "rw",
     isa     => Int,
     default => 3,
 );
+=head2 index_chunk_length
+
+    index_chunk_length => 2,
+
+Like L</plex_chunk_length>, but for storing indexes.
+
+=cut
 
 has index_chunk_length => (
     is      => "rw",
@@ -149,12 +194,54 @@ has overwrite_newer => (
     default => 0,
 );
 
+has path => (
+    is => "rw",
+    isa => Str,
+);
+
+=head2 plex_chunks
+
+    plex_chunks => 3, # Optional, defaults to 3
+
+Per the "plex" reference in the L</DESCRIPTION>, files are stored in nested
+directories based on portions of the UUID for a given document:
+
+    A JSON document with the following UUID:
+    d35fd9d9-b899-440a-a8d2-07d7f0675f15
+
+    Would be stored in the following path:
+    d3/5f/d9/d35fd9d9-b899-440a-a8d2-07d7f0675f15.json
+    ^1 ^2 ^3 ^ Full UUID                         ^ Suffix
+
+Internally, the division of the UUID into path elements is referened to as
+"chunks", rather than something fancy like "octets", simply because they might
+I<not> be an octet, or a byte, etc., as the length is variable (see also
+L</plex_chunk_length>).  The number of chunks to be used is 3, as shown here.
+Fewer than that and the pathing won't be as deep; more, and it will provide
+further fragmentation/distribution.  3 is a sane default - you're welcome to
+fiddle around, but are unlikely to see significant benefits moving either
+direction.
+
+=cut
+
+has plex_chunks => (
+    is      => "rw",
+    isa     => Int,
+    default => 3,
+);
+
+has plex_chunk_length => (
+    is      => "rw",
+    isa     => Int,
+    default => 2,
+);
+
 =head2 rehash_key
 
 Advanced setting; boolean or code reference:
 
     # ...
-        rehash_key => 1, # Turn on, use default rehash algorithm
+        rehash_key => 1,           # Turn on, use default rehash algorithm
         rehash_key => \&some_code, # Turn on, use code to do rehashing.
     # ...
 
@@ -182,13 +269,6 @@ has rehash_key => (
 These attributes are for the use and operation of the storage engine itself.
 
 =cut
-
-# Should this be an array or a hash?  Or a map, of some kind?
-has index => (
-    is      => 'rw',
-    isa     => ArrayRef[Str],
-    default => sub { [] },
-);
 
 has initialized => (
     is      => 'rwp',
@@ -301,8 +381,17 @@ sub get_document {
         unless $document->uuid()
         and    $document->uuid() eq $uuid;
 
-    $document->meta->{ctime} = $ctime;
+    $document->meta->{ctime}      = $ctime;
     $document->meta->{in_storage} = 1;
+
+    # Metadata entry for the current values under which the document is indexed.
+    # If these values change, we'll need to clean up the old indexes before
+    # saving the new ones.  We'll also need to use this to accurately purge
+    # indexes during document delete.
+    my @indexes = @{ $self->index };
+    if ( scalar @indexes ) {
+        $document->meta->{indexed} = $document->extract( @indexes );
+    }
 
     return $document;
 }
@@ -475,6 +564,8 @@ sub clear_index {
     }
 }
 
+# TODO: when doing unit tests for this, double check that when changing an
+# indexed value, the old index is removed.
 sub update_indexes {
     my ($self, $document, $clear_all) = @_;
     check_args(
@@ -488,12 +579,30 @@ sub update_indexes {
 
     my $uuid    = $document->uuid;
     my @indexes = @{ $self->index };
+    my %indexed = %{ $document->meta->{indexed} || {} };
     if ( scalar @indexes ) {
         # TODO: This is a slow approach; might be better if we built a batch
         # index update process.
-        my $values = $document->extract( @indexes );
+        my %values = $document->extract( @indexes );
         DOC_INDEX: foreach my $index ( @indexes ) {
-            my $value = $$values{ $index };
+            my $value = $values{ $index };
+
+            if ( exists $indexed{ $index } ) {
+                # Remove it from the old index IF: the values have changed OR
+                # we're in clear_all mode.  And if we're in clear_all mode, we
+                # can skip ahead to the next one.
+                if ( $clear_all || $indexed{ $index } ne $value ) {
+                    $self->clear_index( $index, $indexed{ $index }, $uuid );
+                }
+
+                # If the indexed value hasn't changed, or we've just cleared out
+                # an old reference and don't need to write a new one, skip
+                # ahead.
+                next DOC_INDEX
+                    if $clear_all
+                    or $indexed{ $index } eq $value;
+            }
+
             # If there's something in the index field, save it.
             # If not, or we're in clearing mode, clear it.
             my $mode = (
@@ -504,6 +613,12 @@ sub update_indexes {
                 :  'clear_index'
             );
             $self->$mode( $index, $value, $uuid );
+        }
+        # Update the index metadata with the current snapshot.
+        if ( $clear_all ) {
+            delete $document->meta->{indexed};
+        } else {
+            $document->meta->{indexed} = \%values;
         }
     }
 }
