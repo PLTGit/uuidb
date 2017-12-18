@@ -11,7 +11,7 @@ UUIDB::Storage::Fileplex - File based document storage engine with index support
         document_type   => "JSON",     # <= Whatever; we don't care.
         storage_type    => "Fileplex", # <= that's us.
         storage_options => {
-            path => "/path/to/database", # <= See "set_options"
+            path => "/path/to/database", # <= See "OPTION ATTRIBUTES"
         },
     );
 
@@ -20,6 +20,15 @@ UUIDB::Storage::Fileplex - File based document storage engine with index support
         this => "is",
         some => "data",
     });
+
+    # Get another copy of the data (not shared ref!)
+    my $data = $uuidb->get( $key );
+
+    # Get the UUIDB::Document object
+    my $document = $uuidb->get_document( $key );
+
+    # Yup.
+    is_deeply( $data, $document->data );
 
 =head1 DESCRIPTION
 
@@ -31,7 +40,7 @@ the UUIDB documents on disk.
 
 Documents are stored one-to-a-file, named for the UUID assigned by the database
 engine.  In order to avoid complications with overloading inodes or making a
-directory untenable for maintenance it breaks them up a little accroding to a
+directory untenable for maintenance it breaks them up a little according to a
 simple (but extensible) encoding scheme, paring off C<plex_chunk> pieces
 (default 3) of the UUID value of <plex_length> each (default 2).  For example:
 
@@ -91,7 +100,9 @@ sub write_index_file   ( $$@   );
 =head1 OPTION ATTRIBUTES
 
 These attributes are available to be set as options during instantiation, and
-affect the configuration and behavior of file storage, indexing, etc.
+affect the configuration and behavior of file storage, indexing, etc.  Some of
+these may only be set during instantiation (which is good, because changing them
+after the fact could render the data inaccessible).
 
 =head2 data_path
 
@@ -105,7 +116,7 @@ created if it does not exist.  See also L</path>.
 =cut
 
 has data_path => (
-    is      => "rw",
+    is      => "ro",
     isa     => Str,
     default => "data",
 );
@@ -113,34 +124,50 @@ has data_path => (
 =head2 index
 
     # ...
-    index => [ "name", "geo" ], # Optional, must be an arrayref of strings
+    index => [ "first_name", "geo" ], # Optional, must be an arrayref of strings
     # ...
 
-    # With that storage_option(s) set during instantiation, we can now do the
+    # With this storage_option set during instantiation, we can now do the
     # following:
 
-    my @documents = $uuidb->storage->search_index( "name", "Inigo" );
+    my @documents = $uuidb->storage->search_index( first_name => "Inigo" );
     # If there are any documents for which $document->extract("name") yields a
     # value beginning with "Inigo", those will now be in the @documents
     # collection returned from the search. Tada!
 
-Probably the most significant additional feature of this storage engine are the
-indexes, which are used to retrieve documents by field values other than their
-UUID.  The strings here correspond to named values which can be retrieved from
+    # Get everyon from Florin.  This might be a large list - be careful about
+    # what you index, the more unique the better.  Also, don't let anyone from
+    # Guilder have this list.
+    my @other_documents = $uuidb->storage->search_index( geo => "Florin" );
+
+Probably the most significant feature of this storage engine are the indexes,
+which are used to retrieve documents by values other than their UUID.  The
+C<index> names here correspond to fields which can be retrieved from
 L<UUIDB::Document> objects by use of the L<UUIDB::Document#extract> method.  The
 index name and the extracted value will form a key-value pair and be written in
-and inverse lookup array using fairly rudimentary association.
+and inverse lookup array using fairly rudimentary association.  The match of a
+value within a given key will then yield the UUID of the original record.
 
-Which is a good segue into Limitations: these really are simple inverse lookups,
-and do not allow for full text search or even mid-value searching.  Inverse
-lookups I<can> match on partial values, but only based on the beginning of the
-value.  Stored values are case sensitive, and in fact need not even be string
-data - any data type (and/or encoding) is supported in both the index name and
-the value for that index from the document.  There are no limitations on length,
-but extremely long values don't make much sense for indexing in the first place
+B<Limitations>: these really are simple inverse C<< value => key >> lookups, and
+do not allow for full text search or even mid-value searching.  Inverse lookups
+I<can> match on partial values, but only based on the beginning of the value;
+they're I<really> fast for "begins with..." or exact match searches, but rubbish
+for everything else.
+
+Indexed values are case sensitive, and in fact need not even be string data:
+any data type (and/or encoding) is supported in both the name of the C<index>
+and the C<value> from the document.  Maximum length is determined by
+L</index_length_max> (which comes with important caveats, so read that section),
+and extremely long values don't make much sense for indexing in the first place
 since you only need something sufficiently differentiated to be identifiable.
 
-See also L</search_index>.
+B<WHICH MEANS>: if you're going to be storing on definite articles, it makes
+sense to apply Title indexing rules: C<lastname, firstname>, or C<Book, The>,
+etc.  B<This is not provided for you>, because how data is mangled should be up
+to you; it's just highly recommend that some intelligent form of mangling be
+done.
+
+See also L</search_index>, L</standardize_index_value>.
 
 =cut
 
@@ -150,40 +177,90 @@ has index => (
     default => sub { [] },
 );
 
-
 =head2 index_chunks
 
     index_chunks => 3, # Optional, defaults to 3
 
+Like L</plex_chunks>, but for storing indexes.  This is a mostly-internal
+option, and should be left alone unless you really know what you're doing.
+
 =cut
 
 has index_chunks => (
-    is      => "rw",
+    is      => "ro",
     isa     => Int,
     default => 3,
 );
+
 =head2 index_chunk_length
 
-    index_chunk_length => 2,
+    index_chunk_length => 2, # Optional, defaults to 2
 
-Like L</plex_chunk_length>, but for storing indexes.
+Like L</plex_chunk_length>, but for storing indexes.  Also not recommended for
+modification unless you really know what you're doing; note that the use of wide
+character values in which first hex bytes are likely to be C<0x00> will vastly
+diminish variability in the plexing scheme.  In that case, changing this to 4
+(or even 8) might make more sense.  As a general rule, "as many bytes as it
+takes to represent a single character, times 2 (for hexadecimal translation)".
 
 =cut
 
 has index_chunk_length => (
-    is      => "rw",
+    is      => "ro",
     isa     => Int,
     default => 2,
 );
 
+=head2 index_length_max
+
+    index_length_max => 128, # Optional, defaults to 128
+
+When indexes are created on the filesystem, they do so as a plex-chunked path
+leading to a full-length file (see C<DESCRIPTION>).  In order to retain complete
+compatibility with filesystems and various character encoding schemes, and not
+have to worry about interpretation or misinterpretation of path-influencing
+characters, this is done by using the hexadecimal representation of the raw
+bytes of the value. This length limit I<refers to the length of the hexadecimal>
+string, rather than the originating string (not including the L</index_suffix>
+if any).  Character encodings can have a B<huge> influence on how much "data"
+really makes it into the index, then.
+
+Setting this value to C<0> disables max length enforcement, but isn't really
+recommended.
+
+=cut
+
+has index_length_max => (
+    is      => "ro",
+    isa     => Int,
+    default => 128,
+);
+
+=head2 index_path
+
+    index_path => "index", # Optional, defaults to "index"
+
+Like L</data_path>, but for storing indexes.  Simple string, directory name:
+specifies where under the database L</path> the indexes will be stored.
+
+=cut
+
 has index_path => (
-    is      => "rw",
+    is      => "ro",
     isa     => Str,
     default => "index",
 );
 
+=head2 index_suffix
+
+    index_suffix => "idx", # Optional, defaults to "idx"
+
+When a value is indexed, it's done so as a filename
+
+=cut
+
 has index_suffix => (
-    is      => "rw",
+    is      => "ro",
     isa     => Str,
     default => "idx",
 );
@@ -213,7 +290,7 @@ directories based on portions of the UUID for a given document:
     d3/5f/d9/d35fd9d9-b899-440a-a8d2-07d7f0675f15.json
     ^1 ^2 ^3 ^ Full UUID                         ^ Suffix
 
-Internally, the division of the UUID into path elements is referened to as
+Internally, the division of the UUID into path elements is referenced to as
 "chunks", rather than something fancy like "octets", simply because they might
 I<not> be an octet, or a byte, etc., as the length is variable (see also
 L</plex_chunk_length>).  The number of chunks to be used is 3, as shown here.
@@ -510,7 +587,7 @@ sub standardize_key {
 #
 # In order to support these we need common routines for:
 # - Given an index name and a value, construct a path under which that
-#   index would b estored.
+#   index would be stored.
 # - hydrate / store UUIDB lists from/to the target path
 # - Create an object at that path with the list of values it contains
 # - Remove the object at that path if there are no other entries.
@@ -657,18 +734,37 @@ sub compose_index_path {
 
 sub index_key {
     my ($self, $key) = @_;
+    my $maxlength = $self->index_length_max;
 
     check_args(
         args => { index => $key         },
         must => { index => [Str, qr/./] },
     );
+    if ($maxlength) {
+        # We know the value is going to be multiplied by at least 2 when it goes
+        # through the hex packing below; it doesn't make sense to process more
+        # data than we need; thus, truncate the data at this point (with a
+        # smidgeon of padding) just in case.
+        $key = substr( $key, 0, int( ( $maxlength / 2 ) + 1 ) );
+    }
 
-    return unpack( "H*", $key );
+    my $hexkey = unpack( "H*", $key );
+    if ($maxlength) {
+        $hexkey = substr( $hexkey, 0, $maxlength );
+    }
+    return $hexkey;
 }
 
 sub standardize_index_name {
     my ($self, $index_name) = @_;
     return $self->index_key( $index_name );
+}
+
+# Simple pass-through, but if you want to add definite article rules
+# "Lastname, Firstname", or "Name of Book, The", this is the place to do it.
+sub standardize_index_value {
+    my ($self, $index_name, $index_value) = @_;
+    return $index_value;
 }
 
 # Find an index entry
@@ -706,11 +802,12 @@ sub search_index {
         unless grep { $_ eq $index } @{ $self->index };
 
     my $suffix = $self->index_suffix;
-    if ( defined $suffix ) {
-        $suffix =~ s/(?<!\.)$suffix\Z/\.$suffix/;
-    } else {
-        $suffix = "";
+    for ($suffix) {
+        last unless defined;
+        s/(?<!\.)$suffix\Z/\.$suffix/;
     }
+
+    my $match_key = $self->index_key( $starts_with );
 
     my @matches;
     if ( $exact_match ) {
@@ -731,7 +828,7 @@ sub search_index {
     } else {
         # Build a base path from $self->index_chunk_length sized chunks (but only
         # where those chunks are complete)
-        my $index_value  = $self->standardize_index_name( $starts_with );
+        my $index_value  = $self->index_key( $starts_with );
         my @start_chunks;
         my $partial      = "";
         my $chunks       = $self->index_chunks;
