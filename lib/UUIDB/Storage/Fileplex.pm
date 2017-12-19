@@ -59,18 +59,18 @@ use v5.10;
 use strict;
 use warnings;
 
-use Carp qw( carp croak );
-
 use Moo;
+
+use Carp            qw( carp croak );
 use Digest::MD5     qw( md5_hex    );
 use File::Find      qw( find       );
 use IO::All         qw( -utf8      );
-use UUIDB::Util     qw( check_args );
 use Types::Standard qw(
     ArrayRef  Bool
     InstanceOf Int
     Maybe  Ref Str
 );
+use UUIDB::Util     qw( check_args );
 
 # Be tidy.
 use namespace::autoclean -also => [qw(
@@ -255,7 +255,10 @@ has index_path => (
 
     index_suffix => "idx", # Optional, defaults to "idx"
 
-When a value is indexed, it's done so as a filename
+Indexed fields are stored as a simple file with a list of all matching UUIDs.
+While it's just text, it's still nice to give it some indication of its purpose
+and to differentiate it from other data.  This suffix is a convenient way of
+doing just that.
 
 =cut
 
@@ -265,11 +268,44 @@ has index_suffix => (
     default => "idx",
 );
 
+=head2 overwrite_newer
+
+    overwrite_newer => 0, # Optional boolean, defaults to 0
+
+Document metadata includes a last modified timestamp from the filesystem on
+which it's stored.  If, when we go to save an updated version of the document,
+the timestamp on disk is newer than the one in the document's metadata, we have
+a potential version conflict (someone else has updated it between loading our
+version and starting the save operation).
+
+The default behavior if that potential conflict is detected is to C<croak> with
+an error message indicating the case.  If however this option is set to true, we
+will proceed with the overwrite and merely C<carp> instead.
+
+The safest resolution is to load the newer document and compare changes, but as
+this may be a nuanced and costly operation (we're supposed to know about
+storage, not documents), that's left up to the caller to sort out.
+
+=cut
+
 has overwrite_newer => (
     is      => "rw",
     isa     => Bool,
     default => 0,
 );
+
+=head2 path
+
+    path => "/path/to/the/database", # Required, string, directory path
+
+This is a file based storage engine, so we need a place to store the files.
+That place is determined by this string.  We will attempt to create the path if
+it does not exist (inclusive of the entire directory tree), and will croak if we
+are either unable to do that, or the provided path is not writable.  All
+database content will be stored in subdirectories under this path as determined
+by L</data_path> and L</index_path>.
+
+=cut
 
 has path => (
     is => "rw",
@@ -288,7 +324,7 @@ directories based on portions of the UUID for a given document:
 
     Would be stored in the following path:
     d3/5f/d9/d35fd9d9-b899-440a-a8d2-07d7f0675f15.json
-    ^1 ^2 ^3 ^ Full UUID                         ^ Suffix
+    ^1 ^2 ^3 ^ Full UUID                         ^ Document Suffix (if any)
 
 Internally, the division of the UUID into path elements is referenced to as
 "chunks", rather than something fancy like "octets", simply because they might
@@ -401,11 +437,13 @@ sub store_document {
                $document->meta->{ctime}
             && $document->meta->{ctime} < $ctime
         ) {
+            # TODO: callback for making comparisons and/or deciding course of
+            # action?
+
             # Overwrite warnings (if the document has been updated more recently
             # than the local $document copy believes it has.
             unless ( $self->overwrite_newer ) {
-                carp "Not overwriting document with newer timestamp than ours";
-                return;
+                croak "Not overwriting document with newer timestamp than ours";
             }
             carp "Overwriting record with newer timestamp than ours";
         }
