@@ -53,11 +53,11 @@ simple (but extensible) encoding scheme, paring off C<plex_chunk> pieces
 
 ...where the suffix value comes from the L<UUIDB::Document/suffix> value.
 
-Advanced usage super-power: because of the ways in which document as stored on
-disk and the predictable nature of plexing hexadecimal characters, it's entirely
-possible to pre-populate the L</data_path> and/or L<index_path> directory trees
-with symlinks to other locations (e.g., network storage).  It also plays well
-with version control systems like Git.
+Advanced usage super-power: because of the way documents are stored on disk and
+the predictable nature of plexing hexadecimal characters, it's entirely possible
+to pre-populate the L</data_path> and/or L<index_path> directory trees with
+symlinks to other locations (e.g., network storage).  It also plays well with
+version control systems like Git.
 
 =cut
 
@@ -65,8 +65,10 @@ use v5.10;
 use strict;
 use warnings;
 
+# What we are...
 use Moo;
 
+# ...what we need.
 use Carp            qw( carp croak );
 use Digest::MD5     qw( md5_hex    );
 use File::Find      qw( find       );
@@ -475,7 +477,7 @@ to purge those as well.
 sub delete_document {
     my ($self, $uuid, $warnings) = @_;
     $uuid = $self->standardize_key( $uuid );
-    if ( my $path = $self->exists( $uuid, undef, 1 ) ) {
+    if ( my ($path) = $self->document_exists( $uuid ) ) {
         # clear from various indexes, which requires loading first and doing the
         # index lookups.  But if we can't load it (because the file is bad, or
         # somehow corrupted, just emit a small warning and be on our way.
@@ -495,25 +497,56 @@ sub delete_document {
     }
 }
 
+=head1 document_exists
+
+    if ( $uuidb->document_exists( $uuid ) ) {
+        # Do stuff.
+    }
+
+Simple boolean indicating whether a document by the given C<$uuid> can be found
+on disk.  As a minor extension to the original spec, if invoked in list context
+the path of the identified document will be returned instead of just the
+boolean, which is useful for not having to repeat operations.
+
+=cut
+
 sub document_exists {
-    my ($self, $uuid, $suffix, $as_path) = @_;
+    my ($self, $uuid) = @_;
     check_args(
-        args => {
-            uuid    => $uuid,
-            suffix  => $suffix,
-            as_path => $as_path,
-        },
-        must => { uuid   => Str }, # TODO: is_uuid_string ?
-        can  => {
-            suffix  => Maybe[Str],
-            as_path => Bool,
-        },
+        args => { uuid => $uuid },
+        must => { uuid => Str   }, # TODO: is_uuid_string ?
     );
-    $suffix //= $self->db->default_document_handler->suffix;
-    my $path = $self->compose_document_path( $uuid, $suffix, 1 );
-    return undef unless -f $path;
-    return ( $as_path ? $path : 1 );
+    my $suffix = $self->db->default_document_handler->suffix;
+    my $path   = $self->compose_document_path( $uuid, $suffix, 1 );
+    unless ( -f $path ) {
+        my $found_alt = 0;
+        if ( $suffix ) {
+            # Let's see if there's a version by a different suffix; but if there is,
+            # we're going to make noise about it.
+            my ($path_plain) = ( $path =~ m/\A (.*) \. \Q$suffix\E \Z/x );
+            if (my @found = glob "$path_plain*") {
+                carp "Did not find document $uuid with expected suffix $suffix, "
+                    ."but did find " . scalar( @found ) . " candidates: "
+                    .join( ", ", @found );
+                $path = shift @found;
+                $found_alt = 1;
+            }
+        }
+        return unless $found_alt;
+    }
+    return ( wantarray ? $path : 1 );
 }
+
+=head2 get_document
+
+    my $document = $uuidb->get_document( $uuid, $optional_document_handler );
+
+Return a L<UUIDB::Document> instance (most likely a descendant thereof) for the
+given C<$uuid>.  The optional second argument must be an instance of
+L<UUIDB::Document> if passed, and will be used to determine the type and assist
+in the retrieval and hydration of the identified document.
+
+=cut
 
 sub get_document {
     my ($self, $uuid, $document_handler) = @_;
@@ -529,8 +562,7 @@ sub get_document {
             document_handler => InstanceOf[qw( UUIDB::Document )],
         },
     );
-    $document_handler ||= $self->db->default_document_handler;
-    my $path = $self->exists( $uuid, $document_handler->suffix, 1 );
+    my ($path) = $self->document_exists( $uuid );
     return unless $path;
 
     # Lock, open, read, close.
@@ -539,6 +571,7 @@ sub get_document {
     my $data  = $data_file->all;
     $data_file->close; # and implicit unlock
 
+    $document_handler ||= $self->db->default_document_handler;
     my $document = $document_handler->new_from_data(
         $document_handler->thaw( $data )
     );
@@ -567,6 +600,16 @@ sub get_document {
 }
 
 =head2 store_document
+
+    my $document_uuid = $uuidb->store_document( $a_document );
+
+Writes a L<UUIDB::Document> instance to storage, managing any indexes along the
+way (see the L</index> storage option).  Overwrites any existing document by the
+same UUID (technically, same UUID and same L<UUIDB::Document#suffix>), but first
+checks to see whether that document looks "newer" than ours based on C<ctime>
+comparison.  If it does, we'll C<croak> with an error message unless the
+L</overwrite_newer> storage option is set, in which case we'll merely C<carp>
+and hope you know what you're doing.
 
 =cut
 
@@ -626,6 +669,9 @@ sub store_document {
 
 =head1 CUSTOM METHODS
 
+These methods expand the basic storage signature for its own purposes, mostly
+navigating and maintaining indexes or other internal housekeeping.
+
 =head2 init_check
 
     $fileplex->init_check();
@@ -683,10 +729,48 @@ sub init_check {
 
 =head1
 
+    my $document_path = $fileplex->compose_document_path(
+        $uuid,    # UUID of the document whose path we're composing
+        $suffix,  # suffix to append
+        $full,    # bool: return a full system path, or relative to $self->path?
+    );
+
+Creates the path under which a given UUID can be stored in the system.  Does not
+look for collisions or verify writeability, just assembles appropriate pieces.
+This is used during other storage and retrieval operations to tell us where to
+put it or find it, and consumes the various plex settings (L</plex_chunks>,
+L<plex_chunk_length>).
+
+The C<$suffix> option tells us what suffix if any should be used when
+constructing the path (and unlike some other operations, does NOT fall back to
+the L<UUIDB#default_document_handler> to get the suffix if not provided, making
+it suitable for other manual operations.
+
+The C<$full> option prepends the L</path> of the database, otherwise paths will
+be relative to that starting point.
+
+If used in list context, will return the directory first and filename second. In
+scalar context will concatenate those into one.
+
 =cut
 
 sub compose_document_path {
     my ($self, $uuid, $suffix, $full) = @_;
+
+    check_args(
+        args => {
+            uuid   => $uuid,
+            suffix => $suffix,
+            full   => $full,
+        },
+        must => {
+            uuid => Str,
+        },
+        can => {
+            suffix => Str,
+            full   => Bool,
+        },
+    );
 
     $self->init_check();
 
@@ -709,11 +793,20 @@ sub compose_document_path {
     return ( wantarray ? @parts : join( "/", @parts ) );
 }
 
+=head2 storage_path
+
+    my $path = $fileplex->storage_path( $optional, $additional, $dirs );
+
+Creates a simple directory tree based on L</path> plus whatever else is passed
+in (if anything).  This is just a DRY feature to avoid repetitive manual
+concatenation in other places.
+
+=cut
+
 sub storage_path {
     my ($self, @dirs) = @_;
-    my $base_path = $self->path;
-    croak "No base path set" unless $base_path;
-    return join( "/", $base_path, @dirs );
+    $self->init_check();
+    return join( "/", $self->path, @dirs );
 }
 
 sub rehash_algorithm {

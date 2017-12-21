@@ -16,8 +16,9 @@ use UUIDB::Util     qw( check_args );
 
 # TODO: POD, tests
 has db => (
-    is => "rw",
-    isa => InstanceOf[qw( UUIDB )],
+    is       => "rw",
+    isa      => InstanceOf[qw( UUIDB )],
+    weak_ref => 1,
 );
 
 has data => (
@@ -155,7 +156,7 @@ sub new_from_data {
     # performance would also be nice; especially since handing around a lot of
     # refs is a *great* way to cause memory leaks.
     my $uuid;
-    $uuid = $self->pull_uuid_from_data( $data )
+    $uuid = $self->uuid_from_data( $data )
         if  $data
         and $self->propagate_uuid;
 
@@ -209,7 +210,7 @@ sub clear_uuid_from_data {
 
 # Note that we do not then call $self->uuid($uuid) if ($self->propagate_uuid());
 # because we don't want to risk recursion cases.
-sub pull_uuid_from_data {
+sub uuid_from_data {
     my ($self, $data) = @_;
     $data ||= $self->data;
     return unless $data;

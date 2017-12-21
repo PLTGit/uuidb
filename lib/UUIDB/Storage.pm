@@ -15,8 +15,9 @@ use UUIDB::Util     qw( check_args          );
 # TODO: POD, tests
 
 has db => (
-    is  => "rw",
-    isa => InstanceOf[qw( UUIDB )],
+    is       => "rw",
+    isa      => InstanceOf[qw( UUIDB )],
+    weak_ref => 1,
 );
 
 has readonly => (
@@ -26,7 +27,7 @@ has readonly => (
 );
 
 # TODO: unit test for this.
-before [qw( store_document delete )] => sub {
+before [qw( store_document delete_document )] => sub {
     my ($self) = @_;
     croak "Cannot modify storage when readonly" if $self->readonly;
 };
@@ -37,7 +38,7 @@ sub set_options {
 }
 
 # NOTE: UUIDB.pm and UUIDB::Storage::Fileplex have some opinions as to what the
-# invocation signature looks like for these.
+# invocation signature looks like for these when it comes to POD.
 sub delete_document { croak "'delete_document' method must be overridden in descendant classes" }
 sub document_exists { croak "'document_exists' method must be overridden in descendant classes" }
 sub get_document    { croak "'get_document' method must be overridden in descendant classes"    }

@@ -317,7 +317,7 @@ sub get_document {
     # TODO: check_args
 
     $self->init_check();
-    # Last bool fro "as document"
+    # Last bool for "as document"
     $self->get_typed( $key, ($type || $self->default_document_type), 1 );
 }
 
