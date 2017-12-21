@@ -36,15 +36,19 @@ sub set_options {
     # TODO: storage_options
 }
 
-sub store_document { croak "The 'store_document' method must be overridden in descendant classes" }
-sub get_document   { croak "The 'get_document' method must be overridden in descendant classes"   }
-sub exists         { croak "The 'exists' method must be overridden in descendant classes"         }
-sub delete         { croak "The 'delete' method must be overridden in descendant classes"         }
+# NOTE: UUIDB.pm and UUIDB::Storage::Fileplex have some opinions as to what the
+# invocation signature looks like for these.
+sub delete_document { croak "'delete_document' method must be overridden in descendant classes" }
+sub document_exists { croak "'document_exists' method must be overridden in descendant classes" }
+sub get_document    { croak "'get_document' method must be overridden in descendant classes"    }
+sub store_document  { croak "'store_document' method must be overridden in descendant classes"  }
 
 # Simple aliases
-sub get            { &get_document   }
-sub remove         { &delete         }
-sub store          { &store_document }
+sub delete         { shift->delete_document( @_ ) }
+sub exists         { shift->document_exists( @_ ) }
+sub get            { shift->get_document(    @_ ) }
+sub remove         { shift->delete_document( @_ ) }
+sub store          { shift->store_document(  @_ ) }
 
 sub standardize_key {
     my ($self, $key) = @_;

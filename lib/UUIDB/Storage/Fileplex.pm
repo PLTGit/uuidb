@@ -53,6 +53,12 @@ simple (but extensible) encoding scheme, paring off C<plex_chunk> pieces
 
 ...where the suffix value comes from the L<UUIDB::Document/suffix> value.
 
+Advanced usage super-power: because of the ways in which document as stored on
+disk and the predictable nature of plexing hexadecimal characters, it's entirely
+possible to pre-populate the L</data_path> and/or L<index_path> directory trees
+with symlinks to other locations (e.g., network storage).  It also plays well
+with version control systems like Git.
+
 =cut
 
 use v5.10;
@@ -85,7 +91,7 @@ use namespace::autoclean -also => [qw(
 
 extends qw( UUIDB::Storage );
 
-# Prototyes for internal consistency enforcement.  These belong to functions
+# Prototypes for internal consistency enforcement.  These belong to functions
 # which are scrubbed from the namespace, but that doesn't mean we're not
 # civilized about the composition of our internal routines.
 
@@ -102,11 +108,13 @@ sub write_index_file   ( $$@   );
 These attributes are available to be set as options during instantiation, and
 affect the configuration and behavior of file storage, indexing, etc.  Some of
 these may only be set during instantiation (which is good, because changing them
-after the fact could render the data inaccessible).
+after the fact could render the data inaccessible).  These will be marked as
+C<read only> in the description, but may still be set by passing them to
+L<UUIDB#storage_options>.
 
 =head2 data_path
 
-    data_path => "data", # Optional, defaults to "data"
+    data_path => "data", # Optional, defaults to "data"; read only
 
 Simple string, directory name: specifies where under the Fileplex path the
 documents will be stored.  Since this becomes part of the path itself, it should
@@ -179,7 +187,7 @@ has index => (
 
 =head2 index_chunks
 
-    index_chunks => 3, # Optional, defaults to 3
+    index_chunks => 3, # Optional, defaults to 3; read only
 
 Like L</plex_chunks>, but for storing indexes.  This is a mostly-internal
 option, and should be left alone unless you really know what you're doing.
@@ -194,7 +202,7 @@ has index_chunks => (
 
 =head2 index_chunk_length
 
-    index_chunk_length => 2, # Optional, defaults to 2
+    index_chunk_length => 2, # Optional, defaults to 2; read only
 
 Like L</plex_chunk_length>, but for storing indexes.  Also not recommended for
 modification unless you really know what you're doing; note that the use of wide
@@ -238,7 +246,7 @@ has index_length_max => (
 
 =head2 index_path
 
-    index_path => "index", # Optional, defaults to "index"
+    index_path => "index", # Optional, defaults to "index"; read only
 
 Like L</data_path>, but for storing indexes.  Simple string, directory name:
 specifies where under the database L</path> the indexes will be stored.
@@ -253,12 +261,13 @@ has index_path => (
 
 =head2 index_suffix
 
-    index_suffix => "idx", # Optional, defaults to "idx"
+    index_suffix => "idx", # Optional, defaults to "idx"; read only
 
 Indexed fields are stored as a simple file with a list of all matching UUIDs.
 While it's just text, it's still nice to give it some indication of its purpose
 and to differentiate it from other data.  This suffix is a convenient way of
-doing just that.
+doing just that.  Note that for sanity purposes this string must be 32
+characters or less in length.
 
 =cut
 
@@ -296,7 +305,7 @@ has overwrite_newer => (
 
 =head2 path
 
-    path => "/path/to/the/database", # Required, string, directory path
+    path => "/path/to/database", # Required, string (directory path); read only
 
 This is a file based storage engine, so we need a place to store the files.
 That place is determined by this string.  We will attempt to create the path if
@@ -308,13 +317,13 @@ by L</data_path> and L</index_path>.
 =cut
 
 has path => (
-    is => "rw",
+    is => "ro",
     isa => Str,
 );
 
 =head2 plex_chunks
 
-    plex_chunks => 3, # Optional, defaults to 3
+    plex_chunks => 3, # Optional, defaults to 3; read only
 
 Per the "plex" reference in the L</DESCRIPTION>, files are stored in nested
 directories based on portions of the UUID for a given document:
@@ -335,27 +344,63 @@ further fragmentation/distribution.  3 is a sane default - you're welcome to
 fiddle around, but are unlikely to see significant benefits moving either
 direction.
 
+The L</rehash_key> setting/algorithm can be used to augment or ensure uniqueness
+within the first L</plex_chunks> count of L<plex_chunk_length> hexadecimal
+characters if the UUID engine in use (see L<UUIDB#uuid_generator>) does not
+provide suitable differentiation which might otherwise frustrate this scheme
+(such as sequential, or provider prefixed values).
+
 =cut
 
 has plex_chunks => (
-    is      => "rw",
+    is      => "ro",
     isa     => Int,
     default => 3,
 );
 
+=head2 plex_chunk_length
+
+    plex_chunk_length => 2, # Optional, defaults to 2
+
+Like L</index_chunk_length>, but for the storage of document data.  Not
+recommended for modification unles you really know what you're doing, and with
+the potential to make previously stored data inaccessible if used inconsistently
+over the same data (meaning, once you decide on this value, forever will it
+dominate your database).
+
+Revisiting the example from L</DESCRIPTION> and L</plex_chunks>, altering this
+value to say, C<3>, would change this:
+
+    d3/5f/d9/d35fd9d9-b899-440a-a8d2-07d7f0675f15.json
+
+To this (assuming L<plex_chunks> is still C<3>):
+
+    d35/fd9/d35/fd9d9-b899-440a-a8d2-07d7f0675f15.json
+
+But would also mean changing the number of potential entries in a given
+directory level from 256 (hexadecimal ^ 2) to 4096 (hexadecial ^ 3), and may
+aversion affect storage performance.  Reducing this (to hexidecimal ^ 1) would
+also cause issues with too many entries showing up in the latter trees.  Those
+needed I<less> differentiation, especially in the earlier byte segments (such as
+mapping to a limited number of NFS mounts) are recommended to pre-populate the
+expected ranges with symlinks to appropriate locations instead, and just rely
+on those.
+
+=cut
+
 has plex_chunk_length => (
-    is      => "rw",
+    is      => "ro",
     isa     => Int,
     default => 2,
 );
 
 =head2 rehash_key
 
-Advanced setting; boolean or code reference:
+Advanced setting; boolean or code reference, defaults to false:
 
     # ...
-        rehash_key => 1,           # Turn on, use default rehash algorithm
-        rehash_key => \&some_code, # Turn on, use code to do rehashing.
+    rehash_key => 1,           # Turn on, use default rehash_algorithm method
+    rehash_key => \&some_code, # Turn on, use code to do rehashing.
     # ...
 
 Useful when we need to take the document's UUID and turn it into something with
@@ -380,6 +425,16 @@ has rehash_key => (
 =head1 ATTRIBUTES
 
 These attributes are for the use and operation of the storage engine itself.
+Tread lightly, and favor diagnostics over modification.
+
+=head2 initialized
+
+Boolean to indication whether the storage engine has been properly initialized,
+checking all settings, creating needed directories, etc.  These operations are
+not attempted until the first level of read/write request demands them, in order
+to be late binding and thus save on instantiation overhead.  Those wishing to
+make these assertions earlier rather than later (in order to fail quickly) can
+call L</init_check> to do so.
 
 =cut
 
@@ -389,22 +444,131 @@ has initialized => (
     default => 0,
 );
 
-sub init_check {
-    my ($self) = @_;
+=head1 STANDARD METHODS
 
-    return if $self->initialized;
+These are methods inherited from L<UUIDB::Storage> which we implement or extend.
+The nature of the implementation will be covered here, but where it fits into
+the larger L<UUIDB> ecosystem is better covered by checking the base modules.
 
-    croak "Path not set" unless $self->path;
-    unless ( -d $self->path ) {
-        croak "Invalid path (not found)"
-            unless io->dir( $self->path )->mkpath;
+Generally speaking it's probably better to access these via their handles on a
+L<UUIDB> instance rather than on a C<UUIDB::Storage::Fileplex> instance
+directly.
+
+=head2 delete_document
+
+    $uuidb->delete( $uuid, $warnings );
+
+Permanently removes a document from data storage and any index entries which
+link to it.
+
+If C<$warngins> is true and the document does not exist a small warning will be
+generated (in case someone needs to determine why a document we expected to act
+upon cannot be found, even if only to delete it).
+
+We will also complain if there are L</index> entries and the document cannot be
+loaded, regardless of C<$warnings>.  Why load a document during a delete cycle?
+Because we have to retrieve any data elements used for reverse indexing in order
+to purge those as well.
+
+=cut
+
+sub delete_document {
+    my ($self, $uuid, $warnings) = @_;
+    $uuid = $self->standardize_key( $uuid );
+    if ( my $path = $self->exists( $uuid, undef, 1 ) ) {
+        # clear from various indexes, which requires loading first and doing the
+        # index lookups.  But if we can't load it (because the file is bad, or
+        # somehow corrupted, just emit a small warning and be on our way.
+        my @indexes  = @{ $self->index };
+        my $document = eval { $self->get_document( $uuid ) };
+        carp $@ if $@ && $warnings; # TODO: Keep?
+        if ( @indexes && !$document ) {
+            carp "Unable to load document during delete, indexes will not be purged";
+        } elsif ( scalar @indexes ) {
+            $self->update_indexes( $document, 1 ); # "clear all" mode
+        }
+
+        # Remove the document
+        return prune_file $path, $self->path;
+    } elsif ( $warnings ) {
+        carp "Document not found, nothing deleted";
     }
-    croak "Path not writable"
-        unless -w $self->path
-        and      !$self->readonly;
-
-    $self->_set_initialized( 1 );
 }
+
+sub document_exists {
+    my ($self, $uuid, $suffix, $as_path) = @_;
+    check_args(
+        args => {
+            uuid    => $uuid,
+            suffix  => $suffix,
+            as_path => $as_path,
+        },
+        must => { uuid   => Str }, # TODO: is_uuid_string ?
+        can  => {
+            suffix  => Maybe[Str],
+            as_path => Bool,
+        },
+    );
+    $suffix //= $self->db->default_document_handler->suffix;
+    my $path = $self->compose_document_path( $uuid, $suffix, 1 );
+    return undef unless -f $path;
+    return ( $as_path ? $path : 1 );
+}
+
+sub get_document {
+    my ($self, $uuid, $document_handler) = @_;
+    check_args(
+        args => {
+            uuid             => $uuid,
+            document_handler => $document_handler,
+        },
+        must => {
+            uuid => Str, # TODO: is_uuid_string ?
+        },
+        can => {
+            document_handler => InstanceOf[qw( UUIDB::Document )],
+        },
+    );
+    $document_handler ||= $self->db->default_document_handler;
+    my $path = $self->exists( $uuid, $document_handler->suffix, 1 );
+    return unless $path;
+
+    # Lock, open, read, close.
+    my $data_file = io->file($path)->lock;
+    my $ctime = $data_file->ctime;
+    my $data  = $data_file->all;
+    $data_file->close; # and implicit unlock
+
+    my $document = $document_handler->new_from_data(
+        $document_handler->thaw( $data )
+    );
+    # The document creation might be taking care of this for us, but if UUID
+    # propagation isn't turned on we'll need to do this manually.  Would be nice
+    # if it was more automatic than this, but there's a fine line between
+    # "magic" and "too much magic what were you thinking".  Maybe we'll add an
+    # event model later.
+    $document->uuid( $uuid )
+        unless $document->uuid()
+        and    $document->uuid() eq $uuid;
+
+    $document->meta->{ctime}      = $ctime;
+    $document->meta->{in_storage} = 1;
+
+    # Metadata entry for the current values under which the document is indexed.
+    # If these values change, we'll need to clean up the old indexes before
+    # saving the new ones.  We'll also need to use this to accurately purge
+    # indexes during document delete.
+    my @indexes = @{ $self->index };
+    if ( scalar @indexes ) {
+        $document->meta->{indexed} = $document->extract( @indexes );
+    }
+
+    return $document;
+}
+
+=head2 store_document
+
+=cut
 
 sub store_document {
     my ($self, $document) = @_;
@@ -460,99 +624,66 @@ sub store_document {
     return $document->uuid();
 }
 
-sub get_document {
-    my ($self, $uuid, $document_handler) = @_;
+=head1 CUSTOM METHODS
+
+=head2 init_check
+
+    $fileplex->init_check();
+
+Verifies all settings for sanity and asserts basic storage path existence and
+writeability (creating it as needed).  Does not return anything, but will croak
+(loudly) if there are issues.  After successful one-time initialization this
+becomes a noop.
+
+=cut
+
+sub init_check {
+    my ($self) = @_;
+
+    return if $self->initialized;
+
+    my $gt_zero   = sub { shift  > 0     };
+    my $wordy_str = sub { shift =~ m/\w/ };
     check_args(
         args => {
-            uuid             => $uuid,
-            document_handler => $document_handler,
+            map {( $_ => $self->$_() )} (qw(
+                data_path
+                index_path
+                index_chunks
+                index_chunk_length
+                index_suffix
+                path
+                plex_chunks
+                plex_chunk_length
+            ))
         },
         must => {
-            uuid => Str, # TODO: is_uuid_string ?
-        },
-        can => {
-            document_handler => InstanceOf[qw( UUIDB::Document )],
+            data_path          => $wordy_str,
+            index_path         => $wordy_str,
+            index_chunks       => $gt_zero,
+            index_chunk_length => $gt_zero,
+            index_suffix       => [ $wordy_str, sub { length( shift ) <= 32 } ],
+            path               => $wordy_str,
+            plex_chunks        => $gt_zero,
+            plex_chunk_length  => $gt_zero,
         },
     );
-    $document_handler ||= $self->db->default_document_handler;
-    my $path = $self->exists( $uuid, $document_handler->suffix, 1 );
-    return unless $path;
 
-    # Lock, open, read, close.
-    my $data_file = io->file($path)->lock;
-    my $ctime = $data_file->ctime;
-    my $data  = $data_file->all;
-    $data_file->close; # and implicit unlock
-
-    my $document = $document_handler->new_from_data(
-        $document_handler->thaw( $data )
-    );
-    # The document creation might be taking care of this for us, but if UUID
-    # propagation isn't turned on we'll need to do this manually.  Would be nice
-    # if it was more automatic than this, but there's a fine line between
-    # "magic" and "too much magic what were you thinking".  Maybe we'll add an
-    # event model later.
-    $document->uuid( $uuid )
-        unless $document->uuid()
-        and    $document->uuid() eq $uuid;
-
-    $document->meta->{ctime}      = $ctime;
-    $document->meta->{in_storage} = 1;
-
-    # Metadata entry for the current values under which the document is indexed.
-    # If these values change, we'll need to clean up the old indexes before
-    # saving the new ones.  We'll also need to use this to accurately purge
-    # indexes during document delete.
-    my @indexes = @{ $self->index };
-    if ( scalar @indexes ) {
-        $document->meta->{indexed} = $document->extract( @indexes );
+    croak "Path not set" unless $self->path;
+    unless ( -d $self->path ) {
+        croak "Invalid path (not found)"
+            unless io->dir( $self->path )->mkpath;
     }
+    croak "Path not writable"
+        unless -w $self->path
+        and      !$self->readonly;
 
-    return $document;
+    $self->_set_initialized( 1 );
 }
 
-sub exists {
-    my ($self, $uuid, $suffix, $as_path) = @_;
-    check_args(
-        args => {
-            uuid    => $uuid,
-            suffix  => $suffix,
-            as_path => $as_path,
-        },
-        must => { uuid   => Str }, # TODO: is_uuid_string ?
-        can  => {
-            suffix  => Maybe[Str],
-            as_path => Bool,
-        },
-    );
-    $suffix //= $self->db->default_document_handler->suffix;
-    my $path = $self->compose_document_path( $uuid, $suffix, 1 );
-    return undef unless -f $path;
-    return ( $as_path ? $path : 1 );
-}
+=head1
 
-sub delete {
-    my ($self, $uuid, $warnings) = @_;
-    $uuid = $self->standardize_key( $uuid );
-    if ( my $path = $self->exists( $uuid, undef, 1 ) ) {
-        # clear from various indexes, which requires loading first and doing the
-        # index lookups.  But if we can't load it (because the file is bad, or
-        # somehow corrupted, just emit a small warning and be on our way.
-        my @indexes  = @{ $self->index };
-        my $document = eval { $self->get_document( $uuid ) };
-        carp $@ if $@ && $warnings; # TODO: Keep?
-        if ( @indexes && !$document ) {
-            carp "Unable to load document during delete, indexes will not be purged";
-        } elsif ( scalar @indexes ) {
-            $self->update_indexes( $document, 1 ); # "clear all" mode
-        }
-
-        # Remove the document
-        return prune_file $path, $self->path;
-    } elsif ( $warnings ) {
-        carp "Document not found, nothing deleted";
-    }
-}
+=cut
 
 sub compose_document_path {
     my ($self, $uuid, $suffix, $full) = @_;

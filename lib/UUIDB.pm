@@ -387,7 +387,7 @@ sub exists {
 # potentially pass during exists / delete checks?
 sub delete {
     my ($self, $key, $warnings) = @_;
-    return $self->storage->delete( $key, $warnings );
+    return $self->storage->delete_document( $key, $warnings );
 }
 
 sub init_check {
