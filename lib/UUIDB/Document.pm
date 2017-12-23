@@ -45,7 +45,7 @@ has uuid => (
 
 has propagate_uuid => (
     is      => "rw",
-    isa     => Maybe[Bool, Ref[qw( CODE )]],
+    isa     => Bool,
     default => 0,
 );
 
@@ -76,18 +76,7 @@ before [qw( data uuid )] => sub {
 
 sub _trigger_uuid {
     my ($self, $uuid) = @_;
-    if (my $propagation = $self->propagate_uuid) {
-        # If it's a coderef, invoke it with $self as its arg.
-        # if it's a simple bool, just assume the best and copy it straight into
-        # data.
-        # TODO: do this when "data" changes, too? (in case uuid is set first)
-        if ( ref $propagation ) {
-            $propagation->( $self );
-        } else {
-            # TODO: abstract this to "copy_uuid_to_data" and call it here.
-            $self->data->{uuid} = $self->uuid();
-        }
-    }
+    $self->copy_uuid_to_data( $uuid ) if $self->propagate_uuid;
 }
 
 sub type   { croak "The 'type' method must be overridden in descendant classes"   }

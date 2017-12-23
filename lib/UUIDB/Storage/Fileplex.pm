@@ -398,11 +398,8 @@ has plex_chunk_length => (
 
 =head2 rehash_key
 
-Advanced setting; boolean or code reference, defaults to false:
-
     # ...
-    rehash_key => 1,           # Turn on, use default rehash_algorithm method
-    rehash_key => \&some_code, # Turn on, use code to do rehashing.
+    rehash_key => 1, # Optional, defaults to false
     # ...
 
 Useful when we need to take the document's UUID and turn it into something with
@@ -413,14 +410,14 @@ storage management (plexing; see L</DESCRIPTION>).
 It is I<highly> recommended to use the L<UUIDB::Document/propagate_uuid>
 setting when this is enabled, since otherwise the reverse association from
 hashed key to UUID is effectively impossible to determine (meaning, if we don't
-store the document's UUID in the data of the document, it's effectively
+store the document's UUID in the data of the document, it's essentially
 orphaned).
 
 =cut
 
 has rehash_key => (
     is      => 'rw',
-    isa     => Maybe[Bool, Ref[qw( CODE )]],
+    isa     => Bool,
     default => 0,
 );
 
@@ -472,22 +469,26 @@ loaded, regardless of C<$warnings>.  Why load a document during a delete cycle?
 Because we have to retrieve any data elements used for reverse indexing in order
 to purge those as well.
 
+We also try to be nice and tidy in the process - any empty directory fragments
+in the tree will also be pruned.
+
 =cut
 
 sub delete_document {
     my ($self, $uuid, $warnings) = @_;
-    $uuid = $self->standardize_key( $uuid );
     if ( my ($path) = $self->document_exists( $uuid ) ) {
-        # clear from various indexes, which requires loading first and doing the
-        # index lookups.  But if we can't load it (because the file is bad, or
-        # somehow corrupted, just emit a small warning and be on our way.
-        my @indexes  = @{ $self->index };
-        my $document = eval { $self->get_document( $uuid ) };
-        carp $@ if $@ && $warnings; # TODO: Keep?
-        if ( @indexes && !$document ) {
-            carp "Unable to load document during delete, indexes will not be purged";
-        } elsif ( scalar @indexes ) {
-            $self->update_indexes( $document, 1 ); # "clear all" mode
+        # Index references to this document need to be removed as well; rather
+        # than scan all indexes to see which refer to this UUID, we can load the
+        # document in question and use it to hunt them down much less
+        # expensively (no full directory scans and greps).
+        if (scalar @{ $self->index }) { # Do we have indexes?
+            my $document = eval { $self->get_document( $uuid ) };
+            carp $@ if $@ && $warnings; # TODO: Keep?
+            if ( $document ) {
+                $self->update_indexes( $document, 1 ); # "clear all" mode
+            } else {
+                carp "Unable to load document during delete, indexes will not be purged";
+            }
         }
 
         # Remove the document
@@ -555,12 +556,8 @@ sub get_document {
             uuid             => $uuid,
             document_handler => $document_handler,
         },
-        must => {
-            uuid => Str, # TODO: is_uuid_string ?
-        },
-        can => {
-            document_handler => InstanceOf[qw( UUIDB::Document )],
-        },
+        must => { uuid => Str },
+        can  => { document_handler => InstanceOf[qw( UUIDB::Document )] },
     );
     my ($path) = $self->document_exists( $uuid );
     return unless $path;
@@ -599,6 +596,29 @@ sub get_document {
     return $document;
 }
 
+=head2 standardize_key
+
+    my $standardized_uuid = $fileplex->standardize_key( $uuid );
+
+Since byte storage tends to be choosy about things like case sensitivity and the
+like, all keys are standardized to the same style for storage, comparison, etc.
+In the case of L<UUIDB::Storage>, that means simply verifying its UUID-ness and
+putting it in lowercase.  Here we add the additional option of re-hashing the
+key, if the L</rehash_key> storage option is set.  If it is,
+L</rehash_algorithm> will be invoked to do its thing.
+
+=cut
+
+sub standardize_key {
+    my ($self, $key) = @_;
+    # This also does an is_uuid_string check for us.
+    $key = $self->SUPER::standardize_key( $key );
+    if ( $self->rehash_key ) {
+        $key = $self->rehash_algorithm( $key );
+    }
+    return $key;
+}
+
 =head2 store_document
 
     my $document_uuid = $uuidb->store_document( $a_document );
@@ -609,7 +629,7 @@ same UUID (technically, same UUID and same L<UUIDB::Document#suffix>), but first
 checks to see whether that document looks "newer" than ours based on C<ctime>
 comparison.  If it does, we'll C<croak> with an error message unless the
 L</overwrite_newer> storage option is set, in which case we'll merely C<carp>
-and hope you know what you're doing.
+and hope you know what you're doing while we pave it over.
 
 =cut
 
@@ -632,7 +652,7 @@ sub store_document {
     my ($document_path, $filename) = $self->compose_document_path(
         $document->uuid,
         $document->suffix,
-        1,
+        1, # full system path
     );
 
     # "assert" will auto create the path for us.
@@ -688,7 +708,7 @@ sub init_check {
 
     return if $self->initialized;
 
-    my $gt_zero   = sub { shift  > 0     };
+    my $gt_zero   = sub { shift >  0     };
     my $wordy_str = sub { shift =~ m/\w/ };
     check_args(
         args => {
@@ -727,7 +747,7 @@ sub init_check {
     $self->_set_initialized( 1 );
 }
 
-=head1
+=head1 compose_document_path
 
     my $document_path = $fileplex->compose_document_path(
         $uuid,    # UUID of the document whose path we're composing
@@ -793,13 +813,35 @@ sub compose_document_path {
     return ( wantarray ? @parts : join( "/", @parts ) );
 }
 
+=head2 rehash_algorithm
+
+    my $rehashed_uuid = $fileplex->rehash_algorithm( $uuid );
+
+Given a C<$uuid>, perform some magic on it to make it more suitable for use in
+plexing (mostly by ensuring sufficient variability within the first
+C<< L<plex_chunks> * L<plex_chunk_length> >> characters.  Standard
+implementation is just C<md5_hex>, which should fit the bill.  Extend as you see
+fit to use an alternate algorithm.
+
+Note that this is invoked during L</standardize_key> I<only> if the
+L</rehash_key> boolean is also set, otherwise it's ignored.  Calling it directly
+won't be a noop though, so it's probably best to rely on L</standardize_key> to
+keep the logic consistent.
+
+=cut
+
+sub rehash_algorithm {
+    my ($self, $key) = @_;
+    return md5_hex( $key );
+}
+
 =head2 storage_path
 
     my $path = $fileplex->storage_path( $optional, $additional, $dirs );
 
 Creates a simple directory tree based on L</path> plus whatever else is passed
 in (if anything).  This is just a DRY feature to avoid repetitive manual
-concatenation in other places.
+concatenation in other places where we need to assemble paths.
 
 =cut
 
@@ -807,27 +849,6 @@ sub storage_path {
     my ($self, @dirs) = @_;
     $self->init_check();
     return join( "/", $self->path, @dirs );
-}
-
-sub rehash_algorithm {
-    my ($self, $key) = @_;
-    return md5_hex( $key );
-}
-
-sub standardize_key {
-    my ($self, $key) = @_;
-    # This also does an is_uuid_string check for us.
-    $key = $self->SUPER::standardize_key( $key );
-    if ( my $rehash = $self->rehash_key ) {
-        if ( ref $rehash ) {
-            # Run the coderef instead
-            $key = $rehash->( $key );
-        } else {
-            # TODO: definable hash engine to use.
-            $key = $self->rehash_algorithm( $key );
-        }
-    }
-    return $key;
 }
 
 =head1 Index Related Methods
