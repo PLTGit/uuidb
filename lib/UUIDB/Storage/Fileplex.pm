@@ -851,7 +851,44 @@ sub storage_path {
     return join( "/", $self->path, @dirs );
 }
 
-=head1 Index Related Methods
+=head1 INDEXING
+
+Index related methods and general documentation.  Using indexes:
+
+    # Define indexes:
+    my $uuidb = UUIDB->new(
+        %insert_document_settings_here,
+        storage_type    => "Fileplex",
+        storage_options => {
+            path  => "/var/local/awesome",
+            index => [qw(
+                author
+                title
+            )],
+        },
+    );
+
+    # Save a document with indexed elements:
+    my $id = $uuidb->create({
+        title    => "Moby Dick",
+        author   => "Melville, Herman",
+        year     => 1851,
+        abstract => "This is the famous 1850's novel that does NOT start: "
+                 . "\"It was the best of times, it was the worst of times...\"",
+    });
+
+    # Retrieve documents UUIDs by value: given an indexed value, return matching
+    # document UUIDs.
+    # "starts with"
+    my @uuids = $uuidb->storage->search( author => "Melville" );
+    # "exact match only" (potentially MUCH faster)
+       @uuids = $uuidb->storage->search( title => "Moby Dick", 1 );
+
+    # Search an index: given the beginning of a value, list all matching values
+    # from the index.  This will return (at least) "Melville, Herman".
+    my @expansions = $uuidb->storage->search_index( author => "Melville" );
+
+=head1 INDEX METHODS
 
 =cut
 
@@ -876,10 +913,6 @@ sub storage_path {
 # - Remove the object at that path if there are no other entries.
 # - Remove the path if it contains no more files.
 #
-# HARD PROBLEM: What do we do about changed values in the index?  Should
-# they continue to appear under the old name?  Consumers of this library
-# will need to be aware of the consequences.  "Always available under current
-# name, may be available under prior name (until re-indexed)."
 sub save_index {
     my ($self, $index, $value, $uuid) = @_;
     check_args(
@@ -907,9 +940,9 @@ sub clear_index {
             uuid  => $uuid,
         },
         must => {
-            index => [ Str, qr/\A[^\s]+/ ],
-            value => [ Str, qr/\A[^\s]+/ ],
-            uuid  => [ Str ],
+            index => [ Str, qr/\w/ ],
+            value => [ Str, qr/\w/ ],
+            uuid  => [ Str,        ],
         },
     );
     $uuid = $self->SUPER::standardize_key( $uuid );
@@ -984,23 +1017,24 @@ sub update_indexes {
 }
 
 sub compose_index_path {
-    my ($self, $index, $key, $full) = @_;
+    my ($self, $index, $value, $full) = @_;
     check_args(
         args => {
             index => $index,
-            key   => $key,
+            value => $value,
             full  => $full,
         },
         must => {
             index => [Str, qr/./],
-            key   => [Str, qr/./],
+            value => [Str, qr/./],
         },
         can => {
             full  => Bool,
         },
     );
+    $value = $self->standardize_index_value( $index, $value );
     my @parts = build_chunked_path(
-        $self->index_key( $key ),
+        $self->index_key( $value ),
         $self->index_chunks,
         $self->index_chunk_length,
         $self->index_suffix,
@@ -1038,6 +1072,20 @@ sub index_key {
     return $hexkey;
 }
 
+sub unindex_key {
+    my ($self, $indexed_key, $suffix) = @_;
+    check_args(
+        args => { indexed_key => $indexed_key         },
+        must => { indexed_key => qr/\A[A-Fa-f0-9]+(?:\.\w+)?\Z/ },
+    );
+    $suffix //= '';
+    $suffix =~ s/\A(?<!\.)\b/./ if $suffix; # Conditionally prepend a dot
+    $indexed_key = substr(
+        $indexed_key, 0, ( -1 * ( length $suffix ) )
+    ) if $suffix;
+    return pack( "H*", $indexed_key );
+}
+
 sub standardize_index_name {
     my ($self, $index_name) = @_;
     return $self->index_key( $index_name );
@@ -1045,6 +1093,8 @@ sub standardize_index_name {
 
 # Simple pass-through, but if you want to add definite article rules
 # "Lastname, Firstname", or "Name of Book, The", this is the place to do it.
+# Highly recommended to be idempotent.  Not applied automatically during search
+# operations, such is an exercise left to the developer?
 sub standardize_index_value {
     my ($self, $index_name, $index_value) = @_;
     return $index_value;
@@ -1071,9 +1121,9 @@ sub search_index {
             as_path     => $as_path,
         },
         must => {
-            index       => [ Str, qr/\A[^\s]+/ ],
+            index       => [ Str, qr/\w/     ],
             # TODO: What's the minimum length required?
-            starts_with => [ Str, qr/\A[^\s]+/ ],
+            starts_with => [ Str, qr/\w{1,}/ ],
         },
         can => {
             exact_match => Bool,
@@ -1087,12 +1137,13 @@ sub search_index {
     my $suffix = $self->index_suffix;
     for ($suffix) {
         last unless defined;
-        s/(?<!\.)$suffix\Z/\.$suffix/;
+        s/\A(?<!\.)\b/./;
     }
+    $suffix //= ''; # Default to empty so we can use this in later regexes
 
     my $match_key = $self->index_key( $starts_with );
 
-    my @matches;
+    my %matches;
     if ( $exact_match ) {
         # Build the full path, return it if -f $full_path or undef otherwise.
         # Do this up front because it's a cheaper lookup than just changing the
@@ -1100,14 +1151,11 @@ sub search_index {
         my ($index_path, $filename) = $self->compose_index_path( $index, $starts_with, 1 );
         my $index_file = "$index_path/$filename";
 
-        # Not found? Return false.
+        # Was not found.
         return unless -f $index_file;
 
-        # Found? Return the path, if that's what they want.
-        return $index_file if $as_path;
-
         # Return the name of the identified index.
-        push @matches, $filename;
+        $matches{$filename} = $index_file;
     } else {
         # Build a base path from $self->index_chunk_length sized chunks (but only
         # where those chunks are complete)
@@ -1158,30 +1206,49 @@ sub search_index {
         #   ends with the suffix, if specified
         #
         find(
-            { wanted => sub {
-                   -f $_
-                && $_ =~ m/\A \Q$index_value\E .* \Q$suffix\E \Z/sx
-                && push( @matches, $_ );
-            } },
+            {
+                follow => 1,
+                wanted => sub {
+                      -r $_               # Must be readable
+                    && ( -f $_ || -l $_ ) # Supports regular files and symlinks
+                    && $_ =~ m/\A
+                        \Q$index_value\E  # Starts with our search string
+                        .*                # May have additional content
+                        \Q$suffix\E       # Ends with expected suffix, if any
+                    \Z/sx
+                    && ( $matches{ $_ } = $File::Find::fullname )
+                },
+            },
             @search_paths,
         );
     }
 
-    # Convert the keys back into strings
-    # Return the strings
-    my @strings = map {
-        s/\Q$suffix\E\Z// if ( $suffix );
-        pack( "H*", $_ );
-    } @matches;
+    my @found;
+    if ( $as_path ) {
+        @found = values %matches;
+    } else {
+        # Convert the keys back into strings
+        # Return the strings
+        @found = map {
+            $self->unindex_key( $_, $suffix )
+        } keys %matches;
+    }
 
-    return @strings;
+    if ( wantarray ) {
+        return @found;
+    } else {
+        if ( scalar @found > 1 ) {
+            carp "Found multiple matches, but only returning the first";
+        }
+        return shift @found;
+    }
 }
 
 # Given an index entry, return the list of UUIDs it contains.
-sub lookup_by_index {
-    my ($self, $index, $value) = @_;
+sub search {
+    my ($self, $index, $value, $exact) = @_;
     # Find exact match
-    my $match = $self->search_index( $index, $value, 1, 1 );
+    my $match = $self->search_index( $index, $value, $exact, 1 );
     return unless $match;
     return read_index_file( $match );
 }
@@ -1299,7 +1366,7 @@ sub read_index_file (_) {
         $data{$entry} = 1; # dedupe
     }
     $index->close();
-    return keys %data;
+    return sort keys %data;
 }
 
 sub remove_index_file (_) {
