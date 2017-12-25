@@ -72,6 +72,7 @@ use Moo;
 use Carp            qw( carp croak );
 use Digest::MD5     qw( md5_hex    );
 use File::Find      qw( find       );
+use File::Glob      qw( :bsd_glob  );
 use IO::All         qw( -utf8      );
 use Types::Standard qw(
     ArrayRef  Bool
@@ -83,6 +84,7 @@ use UUIDB::Util     qw( check_args );
 # Be tidy.
 use namespace::autoclean -also => [qw(
     build_chunked_path
+    chunk_split
     is_empty_dir
     prune_file
     prune_tree
@@ -98,6 +100,7 @@ extends qw( UUIDB::Storage );
 # civilized about the composition of our internal routines.
 
 sub build_chunked_path ( $$$;$ );
+sub cunk_split         ( $$$   );
 sub is_empty_dir       ( _     );
 sub prune_file         ( $;$   );
 sub prune_tree         ( $;$   );
@@ -409,8 +412,8 @@ storage management (plexing; see L</DESCRIPTION>).
 
 It is I<highly> recommended to use the L<UUIDB::Document/propagate_uuid>
 setting when this is enabled, since otherwise the reverse association from
-hashed key to UUID is effectively impossible to determine (meaning, if we don't
-store the document's UUID in the data of the document, it's essentially
+hashed key to UUID may be effectively impossible to determine (meaning, if we
+don't store the document's UUID in the data of the document, it's essentially
 orphaned).
 
 =cut
@@ -860,7 +863,7 @@ Index related methods and general documentation.  Using indexes:
         %insert_document_settings_here,
         storage_type    => "Fileplex",
         storage_options => {
-            path  => "/var/local/awesome",
+            path  => "/var/local/bibliotech",
             index => [qw(
                 author
                 title
@@ -870,25 +873,81 @@ Index related methods and general documentation.  Using indexes:
 
     # Save a document with indexed elements:
     my $id = $uuidb->create({
-        title    => "Moby Dick",
-        author   => "Melville, Herman",
-        year     => 1851,
+        author => "Melville, Herman",
+        title  => "Moby Dick",
+        year   => 1851,
+        isbn   => {
+            10 => "0553213113",
+            13 => "978-0553213119",
+        },
         abstract => "This is the famous 1850's novel that does NOT start: "
                  . "\"It was the best of times, it was the worst of times...\"",
     });
 
-    # Retrieve documents UUIDs by value: given an indexed value, return matching
-    # document UUIDs.
-    # "starts with"
+    # Retrieve documents UUIDs by indexed value: given an indexed value, return
+    # matching document UUIDs.
+    #
+    # "starts with"; will return a list of UUIDs for all entries we've indexed
+    # having an author which starts "Melville" (e.g., qr/Melville.*/)
     my @uuids = $uuidb->storage->search( author => "Melville" );
+    #
     # "exact match only" (potentially MUCH faster)
        @uuids = $uuidb->storage->search( title => "Moby Dick", 1 );
 
     # Search an index: given the beginning of a value, list all matching values
-    # from the index.  This will return (at least) "Melville, Herman".
+    # from the index.  This will return (at least) "Melville, Herman", but may
+    # also return things like "Melville, Frederick John", or
+    # "Melville, Velma Caldwell", depending on whether we've indexed their books
+    # as well.
     my @expansions = $uuidb->storage->search_index( author => "Melville" );
 
 =head1 INDEX METHODS
+
+These methods pertain to the use and manipulation of indexes.  They're listed
+below in alphabetical order, but it might help to think of them in logical
+groupings:
+
+=over
+
+=item Searching (read)
+
+=over
+
+=item L</search>
+
+=item L</search_index>
+
+=back
+
+=item Manipulation (write)
+
+=over
+
+=item L</save_index>
+
+=item L</clear_index>
+
+=item L</update_indexes>
+
+=back
+
+=item Utility (miscellaneous)
+
+=over
+
+=item L</compose_index_path>
+
+=item L</index_key>
+
+=item L</unindex_key>
+
+=item L</standardize_index_name>
+
+=item L</standardize_index_value>
+
+=back
+
+=back
 
 =cut
 
@@ -913,23 +972,9 @@ Index related methods and general documentation.  Using indexes:
 # - Remove the object at that path if there are no other entries.
 # - Remove the path if it contains no more files.
 #
-sub save_index {
-    my ($self, $index, $value, $uuid) = @_;
-    check_args(
-        args => {
-            index => $index,
-            value => $value,
-            uuid  => $uuid,
-        },
-        must => {
-            index => Str,
-            value => Str,
-            uuid  => Str, # is_uuid_string ?
-        },
-    );
-    my $index_path = $self->compose_index_path( $index, $value, 1 );
-    write_index_file( $index_path, 1, $uuid );
-}
+=head2 clear_index
+
+=cut
 
 sub clear_index {
     my ($self, $index, $value, $uuid) = @_;
@@ -955,6 +1000,249 @@ sub clear_index {
             remove_index_file( $index_file );
         }
     }
+}
+
+sub compose_index_path {
+    my ($self, $index, $value, $full) = @_;
+    check_args(
+        args => {
+            index => $index,
+            value => $value,
+            full  => $full,
+        },
+        must => {
+            index => [Str, qr/./],
+            value => [Str, qr/./],
+        },
+        can => {
+            full  => Bool,
+        },
+    );
+    $value = $self->standardize_index_value( $index, $value );
+    my @parts = build_chunked_path(
+        $self->index_key( $value ),
+        $self->index_chunks,
+        $self->index_chunk_length,
+        $self->index_suffix,
+    );
+    if ( $full ) {
+        $parts[0] = $self->storage_path(
+            $self->index_path,
+            $self->standardize_index_name( $index ),
+            $parts[0],
+        );
+    }
+    return ( wantarray ? @parts : join( "/", @parts ) );
+}
+
+sub index_key {
+    my ($self, $key) = @_;
+    my $maxlength = $self->index_length_max;
+
+    check_args(
+        args => { index => $key         },
+        must => { index => [Str, qr/./] },
+    );
+    if ($maxlength) {
+        # We know the value is going to be multiplied by at least 2 when it goes
+        # through the hex packing below; it doesn't make sense to process more
+        # data than we need; thus, truncate the data at this point (with a
+        # smidgeon of padding) just in case.
+        $key = substr( $key, 0, int( ( $maxlength / 2 ) + 1 ) );
+    }
+
+    my $hexkey = unpack( "H*", $key );
+    if ($maxlength) {
+        $hexkey = substr( $hexkey, 0, $maxlength );
+    }
+    return $hexkey;
+}
+
+sub save_index {
+    my ($self, $index, $value, $uuid) = @_;
+    check_args(
+        args => {
+            index => $index,
+            value => $value,
+            uuid  => $uuid,
+        },
+        must => {
+            index => Str,
+            value => Str,
+            uuid  => Str, # is_uuid_string ?
+        },
+    );
+    my $index_path = $self->compose_index_path( $index, $value, 1 );
+    write_index_file( $index_path, 1, $uuid );
+}
+
+# Given an index entry, return the list of UUIDs it contains.
+sub search {
+    my ($self, $index, $value, $exact) = @_;
+    # Find exact match
+    my $match = $self->search_index( $index, $value, $exact, 1 );
+    return unless $match;
+    return read_index_file( $match );
+}
+
+# Find an index entry
+# This is a lot of conditional args. It's likely only the first 2 are going to
+# be used by any consuming program, but we should probably think about how we
+# want to handle this a little more cleanly.
+sub search_index {
+    my (
+        $self,
+        $index,
+        $starts_with,
+        $exact_match,
+        $as_path,
+    ) = @_;
+
+    check_args(
+        args => {
+            index       => $index,
+            starts_with => $starts_with,
+            exact_match => $exact_match,
+            as_path     => $as_path,
+        },
+        must => {
+            index       => [ Str, qr/\w/     ],
+            # TODO: What's the minimum length required?
+            starts_with => [ Str, qr/\w{1,}/ ],
+        },
+        can => {
+            exact_match => Bool,
+            as_path     => Bool,
+        },
+    );
+
+    croak "Unknown index '$index'"
+        unless grep { $_ eq $index } @{ $self->index };
+
+    my $suffix = $self->index_suffix;
+    for ($suffix) {
+        last unless defined; # Need something
+        last unless length;  # That's not empty.
+        s/\A(?<!\.)\b/./;    # Stick a dot on the front if it doesn't have one
+    }
+    $suffix //= ''; # Default to safe empty so we can use this in later regexes
+
+    my $match_key = $self->index_key( $starts_with );
+
+    my %matches;
+    if ( $exact_match ) {
+        # Cheapest match - if we have an exact filename for the index, kick it
+        # back.
+
+        # Get these values in parts so we can return them separately later (or
+        # however they're requested).
+        my ($index_path, $filename) = $self->compose_index_path( $index, $starts_with, 1 );
+        my $index_file = "$index_path/$filename";
+
+        # Was not found.
+        return unless -f $index_file;
+
+        # Return the name of the identified index.
+        $matches{$filename} = $index_file;
+    } else {
+        # Build a base path from $self->index_chunk_length sized chunks (but
+        # only where those chunks are complete)
+        my $index_value  = $self->index_key( $starts_with );
+        my $partial      = "";
+        my $chunks       = $self->index_chunks;
+        my $chunk_length = $self->index_chunk_length;
+        my @start_chunks = chunk_split( $index_value, $chunk_length, $chunks );
+        # Do we have an incomplete entry? (e.g., the "starts with" we've been
+        # given is not an even number of chunk lengths?)  If so, we need to
+        # remove that from the stack.
+        if ( length( $start_chunks[-1] ) < $chunk_length ) {
+            $partial = pop @start_chunks;
+        }
+
+        my $start_path = $self->storage_path(
+            $self->index_path,
+            $self->standardize_index_name( $index ),
+            @start_chunks,
+        );
+        return unless -d $start_path;
+
+        my @search_paths;
+        if ( length( $partial ) ) {
+            @search_paths = glob "$start_path/$partial*";
+        } else {
+            push( @search_paths, $start_path );
+        }
+
+        # Use File::Find to accumulate a list of keys
+        # Use simple matching in the "wanted" sub:
+        #   is a file
+        #   the left N most characters of the filename must match $starts_with
+        #   ends with the suffix, if specified
+        #
+        find(
+            {
+                follow => 1, # Traverse any symlinks
+                wanted => sub {
+                      -r $_               # Must be readable
+                    && ( -f $_ || -l $_ ) # Supports regular files and symlinks
+                    && $_ =~ m/\A
+                        \Q$index_value\E  # Starts with our search string
+                        .*                # May have additional content
+                        \Q$suffix\E       # Ends with expected suffix, if any
+                    \Z/sx
+                    && ( $matches{ $_ } = $File::Find::name ) # Add to list
+                },
+            },
+            @search_paths,
+        );
+    }
+
+    my @found;
+    if ( $as_path ) {
+        @found = values %matches;
+    } else {
+        # Convert the keys back into strings
+        @found = map {
+            $self->unindex_key( $_, $suffix )
+        } keys %matches;
+    }
+
+    if ( wantarray ) {
+        return @found;
+    } else {
+        if ( scalar @found > 1 ) {
+            carp "Found multiple matches, but only returning the first";
+        }
+        return shift @found;
+    }
+}
+
+sub standardize_index_name {
+    my ($self, $index_name) = @_;
+    return $self->index_key( $index_name );
+}
+
+# Simple pass-through, but if you want to add definite article rules
+# "Lastname, Firstname", or "Name of Book, The", this is the place to do it.
+# Highly recommended to be idempotent.  Not applied automatically during search
+# operations, such is an exercise left to the developer?
+sub standardize_index_value {
+    my ($self, $index_name, $index_value) = @_;
+    return $index_value;
+}
+
+sub unindex_key {
+    my ($self, $indexed_key, $suffix) = @_;
+    check_args(
+        args => { indexed_key => $indexed_key         },
+        must => { indexed_key => qr/\A[A-Fa-f0-9]+(?:\.\w+)?\Z/ },
+    );
+    $suffix //= '';
+    $suffix =~ s/\A(?<!\.)\b/./ if $suffix; # Conditionally prepend a dot
+    $indexed_key = substr(
+        $indexed_key, 0, ( -1 * ( length $suffix ) )
+    ) if $suffix;
+    return pack( "H*", $indexed_key );
 }
 
 # TODO: when doing unit tests for this, double check that when changing an
@@ -1016,242 +1304,9 @@ sub update_indexes {
     }
 }
 
-sub compose_index_path {
-    my ($self, $index, $value, $full) = @_;
-    check_args(
-        args => {
-            index => $index,
-            value => $value,
-            full  => $full,
-        },
-        must => {
-            index => [Str, qr/./],
-            value => [Str, qr/./],
-        },
-        can => {
-            full  => Bool,
-        },
-    );
-    $value = $self->standardize_index_value( $index, $value );
-    my @parts = build_chunked_path(
-        $self->index_key( $value ),
-        $self->index_chunks,
-        $self->index_chunk_length,
-        $self->index_suffix,
-    );
-    if ( $full ) {
-        $parts[0] = $self->storage_path(
-            $self->index_path,
-            $self->standardize_index_name( $index ),
-            $parts[0],
-        );
-    }
-    return ( wantarray ? @parts : join( "/", @parts ) );
-}
-
-sub index_key {
-    my ($self, $key) = @_;
-    my $maxlength = $self->index_length_max;
-
-    check_args(
-        args => { index => $key         },
-        must => { index => [Str, qr/./] },
-    );
-    if ($maxlength) {
-        # We know the value is going to be multiplied by at least 2 when it goes
-        # through the hex packing below; it doesn't make sense to process more
-        # data than we need; thus, truncate the data at this point (with a
-        # smidgeon of padding) just in case.
-        $key = substr( $key, 0, int( ( $maxlength / 2 ) + 1 ) );
-    }
-
-    my $hexkey = unpack( "H*", $key );
-    if ($maxlength) {
-        $hexkey = substr( $hexkey, 0, $maxlength );
-    }
-    return $hexkey;
-}
-
-sub unindex_key {
-    my ($self, $indexed_key, $suffix) = @_;
-    check_args(
-        args => { indexed_key => $indexed_key         },
-        must => { indexed_key => qr/\A[A-Fa-f0-9]+(?:\.\w+)?\Z/ },
-    );
-    $suffix //= '';
-    $suffix =~ s/\A(?<!\.)\b/./ if $suffix; # Conditionally prepend a dot
-    $indexed_key = substr(
-        $indexed_key, 0, ( -1 * ( length $suffix ) )
-    ) if $suffix;
-    return pack( "H*", $indexed_key );
-}
-
-sub standardize_index_name {
-    my ($self, $index_name) = @_;
-    return $self->index_key( $index_name );
-}
-
-# Simple pass-through, but if you want to add definite article rules
-# "Lastname, Firstname", or "Name of Book, The", this is the place to do it.
-# Highly recommended to be idempotent.  Not applied automatically during search
-# operations, such is an exercise left to the developer?
-sub standardize_index_value {
-    my ($self, $index_name, $index_value) = @_;
-    return $index_value;
-}
-
-# Find an index entry
-# This is a lot of conditional args. It's likely only the first 2 are going to
-# be used by any consuming program, but we should probably think about how we
-# want to handle this a little more cleanly.
-sub search_index {
-    my (
-        $self,
-        $index,
-        $starts_with,
-        $exact_match,
-        $as_path,
-    ) = @_;
-
-    check_args(
-        args => {
-            index       => $index,
-            starts_with => $starts_with,
-            exact_match => $exact_match,
-            as_path     => $as_path,
-        },
-        must => {
-            index       => [ Str, qr/\w/     ],
-            # TODO: What's the minimum length required?
-            starts_with => [ Str, qr/\w{1,}/ ],
-        },
-        can => {
-            exact_match => Bool,
-            as_path     => Bool,
-        },
-    );
-
-    croak "Unknown index '$index'"
-        unless grep { $_ eq $index } @{ $self->index };
-
-    my $suffix = $self->index_suffix;
-    for ($suffix) {
-        last unless defined;
-        s/\A(?<!\.)\b/./;
-    }
-    $suffix //= ''; # Default to empty so we can use this in later regexes
-
-    my $match_key = $self->index_key( $starts_with );
-
-    my %matches;
-    if ( $exact_match ) {
-        # Build the full path, return it if -f $full_path or undef otherwise.
-        # Do this up front because it's a cheaper lookup than just changing the
-        # directory regex below to be exact.
-        my ($index_path, $filename) = $self->compose_index_path( $index, $starts_with, 1 );
-        my $index_file = "$index_path/$filename";
-
-        # Was not found.
-        return unless -f $index_file;
-
-        # Return the name of the identified index.
-        $matches{$filename} = $index_file;
-    } else {
-        # Build a base path from $self->index_chunk_length sized chunks (but only
-        # where those chunks are complete)
-        my $index_value  = $self->index_key( $starts_with );
-        my @start_chunks;
-        my $partial      = "";
-        my $chunks       = $self->index_chunks;
-        my $chunk_length = $self->index_chunk_length;
-        START_CHUNK: for ( my $i = 0; $i < $chunks; $i++ ) {
-            my $chunk = substr(
-                $index_value,
-                $i * $chunk_length,
-                $chunk_length,
-            );
-            if ( length( $chunk ) < $chunk_length ) {
-                # Grab the remainder, if any.
-                $partial = $chunk;
-                last START_CHUNK;
-            }
-            push( @start_chunks, $chunk );
-        }
-
-        my $start_path = $self->storage_path(
-            $self->index_path,
-            $self->standardize_index_name( $index ),
-            @start_chunks,
-        );
-        return unless -d $start_path;
-
-        my @search_paths;
-        if ( length( $partial ) ) {
-            opendir( my $dh, $start_path )
-                or croak "Unable to open path for searching";
-            DIR_SCAN: while ( my $dir = readdir( $dh ) ) {
-                next DIR_SCAN if $dir =~ m/\A \.{1,2} \Z/x
-                              or $dir !~ m/\A \Q$partial\E/x;
-                push( @search_paths, join( "/", $start_path, $dir ) );
-            }
-            closedir( $dh );
-        } else {
-            push( @search_paths, $start_path );
-        }
-
-        # Use File::Find to accumulate a list of keys
-        # Use simple matching in the "wanted" sub:
-        #   is a file
-        #   the left N most characters of the filename must match $starts_with
-        #   ends with the suffix, if specified
-        #
-        find(
-            {
-                follow => 1,
-                wanted => sub {
-                      -r $_               # Must be readable
-                    && ( -f $_ || -l $_ ) # Supports regular files and symlinks
-                    && $_ =~ m/\A
-                        \Q$index_value\E  # Starts with our search string
-                        .*                # May have additional content
-                        \Q$suffix\E       # Ends with expected suffix, if any
-                    \Z/sx
-                    && ( $matches{ $_ } = $File::Find::fullname )
-                },
-            },
-            @search_paths,
-        );
-    }
-
-    my @found;
-    if ( $as_path ) {
-        @found = values %matches;
-    } else {
-        # Convert the keys back into strings
-        # Return the strings
-        @found = map {
-            $self->unindex_key( $_, $suffix )
-        } keys %matches;
-    }
-
-    if ( wantarray ) {
-        return @found;
-    } else {
-        if ( scalar @found > 1 ) {
-            carp "Found multiple matches, but only returning the first";
-        }
-        return shift @found;
-    }
-}
-
-# Given an index entry, return the list of UUIDs it contains.
-sub search {
-    my ($self, $index, $value, $exact) = @_;
-    # Find exact match
-    my $match = $self->search_index( $index, $value, $exact, 1 );
-    return unless $match;
-    return read_index_file( $match );
-}
+########################
+##  INTERNAL METHODS  ##
+################################################################################
 
 # Everything below this line should be namespace cleaned.
 
@@ -1289,14 +1344,7 @@ sub build_chunked_path ($$$;$) {
         $key .= ( "0" x ( $breakdown_length - length( $key ) ) );
     }
 
-    my $path = join(
-        "/",
-        map { substr(
-            $key,
-            $_ * $chunk_length,      # Offset for chunk start
-            $chunk_length            # How much data to chunk?
-        ) } ( 0 .. ( $chunks - 1 ) ) # 0 based chunk no. index
-    );
+    my $path = join( "/", chunk_split( $key, $chunk_length, $chunks ) );
 
     my $file = $key;
     if ( defined $suffix && length( $suffix) ) {
@@ -1305,6 +1353,24 @@ sub build_chunked_path ($$$;$) {
     my @parts = ( $path, $file );
 
     return ( wantarray ? @parts : join( "/", @parts ) );
+}
+
+sub chunk_split ($$$) {
+    my ($key, $length, $count) = @_;
+
+    return unless
+            defined $key
+        and defined $length
+        and defined $count
+        and length $key # Need something to chunk
+        and $length > 0 # chunks need a length
+        and $count  > 0 # need at least one chunk
+    ;
+
+    my $template = join( " ", ( "a$length" x $count ) );
+    # grep allows us to peel empties off the end if $key is shorter than the
+    # template expects based on $length * $count.
+    return grep { length } unpack( $template, $key );
 }
 
 sub is_empty_dir (_) {
