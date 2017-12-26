@@ -156,7 +156,7 @@ has data_path => (
 Probably the most significant feature of this storage engine are the indexes,
 which are used to retrieve documents by values other than their UUID.  The
 C<index> names here correspond to fields which can be retrieved from
-L<UUIDB::Document> objects by use of the L<UUIDB::Document#extract> method.  The
+L<UUIDB::Document> objects by use of the L<UUIDB::Document/extract> method.  The
 index name and the extracted value will form a key-value pair and be written in
 and inverse lookup array using fairly rudimentary association.  The match of a
 value within a given key will then yield the UUID of the original record.
@@ -628,7 +628,7 @@ sub standardize_key {
 
 Writes a L<UUIDB::Document> instance to storage, managing any indexes along the
 way (see the L</index> storage option).  Overwrites any existing document by the
-same UUID (technically, same UUID and same L<UUIDB::Document#suffix>), but first
+same UUID (technically, same UUID and same L<UUIDB::Document/suffix>), but first
 checks to see whether that document looks "newer" than ours based on C<ctime>
 comparison.  If it does, we'll C<croak> with an error message unless the
 L</overwrite_newer> storage option is set, in which case we'll merely C<carp>
@@ -844,7 +844,8 @@ sub rehash_algorithm {
 
 Creates a simple directory tree based on L</path> plus whatever else is passed
 in (if anything).  This is just a DRY feature to avoid repetitive manual
-concatenation in other places where we need to assemble paths.
+concatenation in other places where we need to assemble paths (for both
+documents and indexes).
 
 =cut
 
@@ -871,7 +872,7 @@ Index related methods and general documentation.  Using indexes:
         },
     );
 
-    # Save a document with indexed elements:
+    # Save a document with indexed elements (among others):
     my $id = $uuidb->create({
         author => "Melville, Herman",
         title  => "Moby Dick",
@@ -884,22 +885,30 @@ Index related methods and general documentation.  Using indexes:
                  . "\"It was the best of times, it was the worst of times...\"",
     });
 
-    # Retrieve documents UUIDs by indexed value: given an indexed value, return
-    # matching document UUIDs.
+    #####
+    # Retrieve documents UUIDs by indexed value: given a value, return UUIDs
     #
-    # "starts with"; will return a list of UUIDs for all entries we've indexed
-    # having an author which starts "Melville" (e.g., qr/Melville.*/)
+    # "starts with" version; will return a list of UUIDs for all entries we've
+    # indexed having an author which starts "Melville" (e.g., qr/Melville.*/)
     my @uuids = $uuidb->storage->search( author => "Melville" );
-    #
-    # "exact match only" (potentially MUCH faster)
-       @uuids = $uuidb->storage->search( title => "Moby Dick", 1 );
 
+    #
+    # "exact match only" via optional boolean (potentially MUCH faster)
+       @uuids = $uuidb->storage->search( title => "Moby Dick", 1 );
+    #####
+
+    #####
     # Search an index: given the beginning of a value, list all matching values
     # from the index.  This will return (at least) "Melville, Herman", but may
     # also return things like "Melville, Frederick John", or
     # "Melville, Velma Caldwell", depending on whether we've indexed their books
     # as well.
     my @expansions = $uuidb->storage->search_index( author => "Melville" );
+    #####
+
+In the examples below, C<$fileplex> is used as a shorthand for accessing an
+instance associated with an initialized UUIDB (e.g.,
+C<< my $fileplex = $uuidb->storage >>).
 
 =head1 INDEX METHODS
 
@@ -941,8 +950,6 @@ groupings:
 
 =item L</unindex_key>
 
-=item L</standardize_index_name>
-
 =item L</standardize_index_value>
 
 =back
@@ -951,43 +958,35 @@ groupings:
 
 =cut
 
-# I need to do some thinking out loud.
-# There are 4 fundamental operations regarding indexes (a 5th, if we allow
-# for re-indexing in bulk, but that's really only an extension of these
-# others).
-# save: given the name of an index, e.g., "object_name", and a value, like
-# "my heroic object", store a UUIDB in association with that index.
-#
-# clear: remove a UUIDB from "object_name"/"my heroic object"
-#
-# search: find named entries in an index "object_name"/"my*" => "my heroic object"
-#
-# list: @uuids <= "object_name"/"my heroic object"
-#
-# In order to support these we need common routines for:
-# - Given an index name and a value, construct a path under which that
-#   index would be stored.
-# - hydrate / store UUIDB lists from/to the target path
-# - Create an object at that path with the list of values it contains
-# - Remove the object at that path if there are no other entries.
-# - Remove the path if it contains no more files.
-#
 =head2 clear_index
+
+Mostly internal routine for removing UUIDs from an index.  Exposed only for ease
+of extension - probably should not be called directly.
+
+    $fileplex->clear_index( $uuid, $index_name => $value );
+
+Given a UUID, the name of an index, and the value under which that UUID will be
+found within that index, remove the UUID entry from the index.
+
+Index value must be an exact match; L</search_index> or
+L<UUIDB::Document/extract> are your best bet for producing such a match.
+
+Note: argument order is (and must be) identical to L</save_index>.
 
 =cut
 
 sub clear_index {
-    my ($self, $index, $value, $uuid) = @_;
+    my ($self, $uuid, $index, $value ) = @_;
     check_args(
         args => {
+            uuid  => $uuid,
             index => $index,
             value => $value,
-            uuid  => $uuid,
         },
         must => {
+            uuid  => [ Str,        ],
             index => [ Str, qr/\w/ ],
             value => [ Str, qr/\w/ ],
-            uuid  => [ Str,        ],
         },
     );
     $uuid = $self->SUPER::standardize_key( $uuid );
@@ -1001,6 +1000,26 @@ sub clear_index {
         }
     }
 }
+
+=head2 compose_index_path
+
+    my $index_path = $fileplex->compose_index_path(
+        $index_name => $value,
+        $optional_full_path_boolean,
+    );
+
+Given an index name and value return the plexed path of the resulting file (but
+does not actually create or look for such a file; this is a simple blind
+operation).  Returned filename will have the L</index_suffix> appended, if any.
+
+The optional third boolean argument will cause the full system path to be
+returned, otherwise it will be relative to L</path> + L</index_path>.
+
+If invoked in list context it will return the directory and filename separately:
+
+    my ($path, $filename) = $fileplex->compose_index_path( @args );
+
+=cut
 
 sub compose_index_path {
     my ($self, $index, $value, $full) = @_;
@@ -1018,7 +1037,7 @@ sub compose_index_path {
             full  => Bool,
         },
     );
-    $value = $self->standardize_index_value( $index, $value );
+    $value = $self->standardize_index_value( $index => $value );
     my @parts = build_chunked_path(
         $self->index_key( $value ),
         $self->index_chunks,
@@ -1028,12 +1047,30 @@ sub compose_index_path {
     if ( $full ) {
         $parts[0] = $self->storage_path(
             $self->index_path,
-            $self->standardize_index_name( $index ),
+            $self->index_key( $index ),
             $parts[0],
         );
     }
     return ( wantarray ? @parts : join( "/", @parts ) );
 }
+
+=head2 index_key
+
+    my $index_key = $fileplex->index_key( "something indexable" );
+
+Given an indexable value, produce a filesystem compatible string representation.
+Used when composing index paths (both the index:name and index:value portions),
+with a resulting string no longer than L</index_length_max> characters.
+
+By default, that means simply producing an hexadecimal value from whatever is
+passed in, then truncating the resulting string to L</index_length_max> as
+necessary (to save on processing overhead, only the first
+C<(index_length_max / 2) + 1> bytes are even encoded in the first place).
+
+Exposed for the sake of extension; probably best to be familiar with the
+existing implementation before making your own modifications.
+
+=cut
 
 sub index_key {
     my ($self, $key) = @_;
@@ -1058,25 +1095,55 @@ sub index_key {
     return $hexkey;
 }
 
+=head2 save_index
+
+Mostly internal routine for adding UUIDs to an index.  Exposed only for ease
+of extension - probably should not be called directly.
+
+    $fileplex->save_index( $uuid, $index_name => $value );
+
+Given a UUID, the name of an index, and the (exact)value under which that UUID
+will be found within that index, add the UUID entry to the index.
+
+Note: argument order is (and must be) identical to L</clear_index>.
+
+=cut
+
 sub save_index {
-    my ($self, $index, $value, $uuid) = @_;
+    my ($self, $uuid, $index, $value) = @_;
     check_args(
         args => {
+            uuid  => $uuid,
             index => $index,
             value => $value,
-            uuid  => $uuid,
         },
         must => {
+            uuid  => Str,
             index => Str,
             value => Str,
-            uuid  => Str, # is_uuid_string ?
         },
     );
     my $index_path = $self->compose_index_path( $index, $value, 1 );
     write_index_file( $index_path, 1, $uuid );
 }
 
-# Given an index entry, return the list of UUIDs it contains.
+=head2 search
+
+    my @uuids = $fileplex->search(
+        $index_name => $value,
+        $optional_exact_match_boolean,
+    );
+
+Given an index entry, return the list of UUIDs it contains.  If the optional
+exact match boolean is passed, the C<$value> argument will be used for for exact
+matches only (which are potentially much faster, but not as flexible).
+Otherwise it will be used to search for any indexes entries which I<start> with
+C<$value>.
+
+See also L</search_index>.
+
+=cut
+
 sub search {
     my ($self, $index, $value, $exact) = @_;
     # Find exact match
@@ -1085,15 +1152,48 @@ sub search {
     return read_index_file( $match );
 }
 
-# Find an index entry
-# This is a lot of conditional args. It's likely only the first 2 are going to
-# be used by any consuming program, but we should probably think about how we
-# want to handle this a little more cleanly.
+=head2 search_index
+
+    my @indexed_values = $fileplex->search_index(
+        $index_name => $value,
+        $optional_exact_match_boolean,
+        $optional_as_path_boolean,
+    );
+
+Given an index name and value, return a list of all matching values within the
+same index.  Good for expanding the start of an indexed value into a list of
+options; expanding on the example in L</INDEXING>:
+
+    my @melvilles = $fileplex->search_index( author => "Melville" );
+
+    ###
+    # @melvilles might now contain:
+    #
+    # - "Melville, Frederick John"
+    # - "Melville, Herman"
+    # - "Melville, Lewis"
+    # - "Melville, Velma Caldwell"
+    #
+    # ...and so on.
+
+The optional exact match boolean may not be as useful for doing string
+expansion, but when combined with the option to return the I<paths> of matches
+instead of the I<values>, this is good for identifying filesystem targets.
+Still probably not as efficient as just going with L</compose_document_path>, or
+L</document_exists>, but can be used to perform the equivalent operations for
+index entries.
+
+Can be called in either scalar or list context, however if called in scalar
+context and more than one match was found from the search a warning will result
+and only the first match will be returned.
+
+=cut
+
 sub search_index {
     my (
         $self,
         $index,
-        $starts_with,
+        $value,
         $exact_match,
         $as_path,
     ) = @_;
@@ -1101,14 +1201,13 @@ sub search_index {
     check_args(
         args => {
             index       => $index,
-            starts_with => $starts_with,
+            value       => $value,
             exact_match => $exact_match,
             as_path     => $as_path,
         },
         must => {
-            index       => [ Str, qr/\w/     ],
-            # TODO: What's the minimum length required?
-            starts_with => [ Str, qr/\w{1,}/ ],
+            index => [ Str, qr/\w+/ ],
+            value => [ Str, qr/\w+/ ],
         },
         can => {
             exact_match => Bool,
@@ -1127,7 +1226,7 @@ sub search_index {
     }
     $suffix //= ''; # Default to safe empty so we can use this in later regexes
 
-    my $match_key = $self->index_key( $starts_with );
+    my $match_key = $self->index_key( $value );
 
     my %matches;
     if ( $exact_match ) {
@@ -1136,7 +1235,7 @@ sub search_index {
 
         # Get these values in parts so we can return them separately later (or
         # however they're requested).
-        my ($index_path, $filename) = $self->compose_index_path( $index, $starts_with, 1 );
+        my ($index_path, $filename) = $self->compose_index_path( $index, $value, 1 );
         my $index_file = "$index_path/$filename";
 
         # Was not found.
@@ -1147,7 +1246,7 @@ sub search_index {
     } else {
         # Build a base path from $self->index_chunk_length sized chunks (but
         # only where those chunks are complete)
-        my $index_value  = $self->index_key( $starts_with );
+        my $index_value  = $self->index_key( $value );
         my $partial      = "";
         my $chunks       = $self->index_chunks;
         my $chunk_length = $self->index_chunk_length;
@@ -1161,7 +1260,7 @@ sub search_index {
 
         my $start_path = $self->storage_path(
             $self->index_path,
-            $self->standardize_index_name( $index ),
+            $self->index_key( $index ),
             @start_chunks,
         );
         return unless -d $start_path;
@@ -1176,7 +1275,7 @@ sub search_index {
         # Use File::Find to accumulate a list of keys
         # Use simple matching in the "wanted" sub:
         #   is a file
-        #   the left N most characters of the filename must match $starts_with
+        #   the left N most characters of the filename must match $value
         #   ends with the suffix, if specified
         #
         find(
@@ -1217,31 +1316,79 @@ sub search_index {
     }
 }
 
-sub standardize_index_name {
-    my ($self, $index_name) = @_;
-    return $self->index_key( $index_name );
-}
+=head2 standardize_index_value
 
-# Simple pass-through, but if you want to add definite article rules
-# "Lastname, Firstname", or "Name of Book, The", this is the place to do it.
-# Highly recommended to be idempotent.  Not applied automatically during search
-# operations, such is an exercise left to the developer?
+    my $standardized = $fileplex->standardize_index_value(
+        $index_name => $value
+    );
+
+Produce an index-friendly value potentially more suitable for storage and/or
+searching than the raw value.  This can be useful for differentiating entries
+which might otherwise cluster closely together, like books or films starting
+with "The", or ca. 1990s console game titles starting with "Super".  Also
+useful for turning something like "Herman Melville" into "Melville, Herman",
+in order to follow a more standardized format for later searching; or to extract
+some metadata from a binary element (i.e., converting EXIF data from a JPEG into
+something meaningful).
+
+The index name is supplied in order to differentiate what type of inflection or
+adjustment may be needed.
+
+Note that this is only applied during index storage operations, not searching -
+it's up to the consuming application if a value should be standardized prior to
+using it in index searches.
+
+By default this is a noop, and the index value is returned unchanged.
+
+As an alternate approach to extending this class for adding inflection, a
+L<UUIDB::Document> extension knowledgeable about formatting values during
+L<UUIDB::Document/extract> might also prove useful (and/or custom "field" names
+can be used which only provide inflection during extraction, such as
+C<author_index> instead of just C<author>).
+
+=cut
+
 sub standardize_index_value {
     my ($self, $index_name, $index_value) = @_;
     return $index_value;
 }
 
+=head2 unindex_key
+
+    my $hydrated_key = $fileplex->unindex_key( $indexed_key, $optional_suffix );
+
+Given a value as produced by L</index_key>, invert the process and return it to
+something human-consumable.
+
+In the default implementation, that means packing the hexadecimal key
+representation back into whatever the original bytes were.  This operation is
+critical for use in L</search_index>, which uses it to render identified index
+matches intelligible.
+
+If an optional suffix is provided, that suffix will be stripped from the indexed
+key before processing.
+
+=cut
+
 sub unindex_key {
     my ($self, $indexed_key, $suffix) = @_;
     check_args(
-        args => { indexed_key => $indexed_key         },
+        args => {
+            indexed_key => $indexed_key,
+            suffix      => $suffix,
+        },
         must => { indexed_key => qr/\A[A-Fa-f0-9]+(?:\.\w+)?\Z/ },
+        can  => { suffix      => Str                            },
     );
-    $suffix //= '';
-    $suffix =~ s/\A(?<!\.)\b/./ if $suffix; # Conditionally prepend a dot
-    $indexed_key = substr(
-        $indexed_key, 0, ( -1 * ( length $suffix ) )
-    ) if $suffix;
+
+    # If the suffix exists and is found on the end of the indexed key, nuke it.
+    if ( $suffix ) {
+        $suffix =~ s/\A(?<!\.)\b/./; # Conditionally prepend a dot
+        my $suffix_length = -1 * ( length $suffix );
+        if ( substr( $indexed_key, $suffix_length ) eq $suffix ) {
+            $indexed_key = substr( $indexed_key, 0, $suffix_length );
+        }
+    }
     return pack( "H*", $indexed_key );
 }
 
@@ -1273,7 +1420,7 @@ sub update_indexes {
                 # we're in clear_all mode.  And if we're in clear_all mode, we
                 # can skip ahead to the next one.
                 if ( $clear_all || $indexed{ $index } ne $value ) {
-                    $self->clear_index( $index, $indexed{ $index }, $uuid );
+                    $self->clear_index( $uuid, $index => $indexed{ $index } );
                 }
 
                 # If the indexed value hasn't changed, or we've just cleared out
@@ -1293,7 +1440,7 @@ sub update_indexes {
                 ?  'save_index'
                 :  'clear_index'
             );
-            $self->$mode( $index, $value, $uuid );
+            $self->$mode( $uuid, $index, $value );
         }
         # Update the index metadata with the current snapshot.
         if ( $clear_all ) {

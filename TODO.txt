@@ -55,6 +55,8 @@ UUIDB::Document::Typed ? (need a Moo(se) intermediary for instantiating objects)
       of the database, and performing a comparison to see whether the provided
       values match the explicit set we've been given; or, if we have not been
       given such a set, to infer it from the contents of that stored set.
+- [ ] UUIDB::Storage::Fileplex::Utility, for doing re-index operations, pruning
+      trees, etc.
 
 - [ ] ShardedKV::Storage::UUIDB
 - [ ] Tutorial POD
