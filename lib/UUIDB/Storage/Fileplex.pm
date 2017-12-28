@@ -89,7 +89,6 @@ use namespace::autoclean -also => [qw(
     prune_file
     prune_tree
     read_index_file
-    remove_index_file
     write_index_file
 )];
 
@@ -105,7 +104,6 @@ sub is_empty_dir       ( _     );
 sub prune_file         ( $;$   );
 sub prune_tree         ( $;$   );
 sub read_index_file    ( _     );
-sub remove_index_file  ( _     );
 sub write_index_file   ( $$@   );
 
 =head1 OPTION ATTRIBUTES
@@ -368,7 +366,7 @@ has plex_chunks => (
     plex_chunk_length => 2, # Optional, defaults to 2
 
 Like L</index_chunk_length>, but for the storage of document data.  Not
-recommended for modification unles you really know what you're doing, and with
+recommended for modification unless you really know what you're doing, and with
 the potential to make previously stored data inaccessible if used inconsistently
 over the same data (meaning, once you decide on this value, forever will it
 dominate your database).
@@ -383,8 +381,8 @@ To this (assuming L<plex_chunks> is still C<3>):
     d35/fd9/d35/fd9d9-b899-440a-a8d2-07d7f0675f15.json
 
 But would also mean changing the number of potential entries in a given
-directory level from 256 (hexadecimal ^ 2) to 4096 (hexadecial ^ 3), and may
-aversion affect storage performance.  Reducing this (to hexidecimal ^ 1) would
+directory level from 256 (hexadecimal ^ 2) to 4096 (hexadecimal ^ 3), and may
+aversion affect storage performance.  Reducing this (to hexadecimal ^ 1) would
 also cause issues with too many entries showing up in the latter trees.  Those
 needed I<less> differentiation, especially in the earlier byte segments (such as
 mapping to a limited number of NFS mounts) are recommended to pre-populate the
@@ -495,7 +493,7 @@ sub delete_document {
         }
 
         # Remove the document
-        return prune_file $path, $self->path;
+        return prune_file( $path, $self->path );
     } elsif ( $warnings ) {
         carp "Document not found, nothing deleted";
     }
@@ -996,7 +994,7 @@ sub clear_index {
         if ( scalar( @uuids ) ) {
             write_index_file( $index_file, 0, @uuids );
         } else {
-            remove_index_file( $index_file );
+            prune_file( $index_file, $self->path );
         }
     }
 }
@@ -1250,7 +1248,7 @@ sub search_index {
         my $partial      = "";
         my $chunks       = $self->index_chunks;
         my $chunk_length = $self->index_chunk_length;
-        my @start_chunks = chunk_split( $index_value, $chunk_length, $chunks );
+        my @start_chunks = chunk_split( $index_value, $chunks, $chunk_length );
         # Do we have an incomplete entry? (e.g., the "starts with" we've been
         # given is not an even number of chunk lengths?)  If so, we need to
         # remove that from the stack.
@@ -1392,8 +1390,22 @@ sub unindex_key {
     return pack( "H*", $indexed_key );
 }
 
-# TODO: when doing unit tests for this, double check that when changing an
-# indexed value, the old index is removed.
+=head2 update_indexes
+
+    $fileplex->update_indexes( $document, $optional_delete_boolean );
+
+Update all indexes for a L<UUIDB::Document> instance.  If the optional delete
+boolean is passed all associated indexes will be purged rather than updated.
+
+Document metadata contains references to the state of the document's indexes as
+of the last update or load operation.  If any of the indexed values have
+changed, the old index entries will first be purged before the new ones are
+established.
+
+No return value.
+
+=cut
+
 sub update_indexes {
     my ($self, $document, $clear_all) = @_;
     check_args(
@@ -1401,13 +1413,13 @@ sub update_indexes {
             document  => $document,
             clear_all => $clear_all,
         },
-        must => { document  => InstanceOf[qw( UUIDB::Document )] } ,
-        can  => { clear_all => Bool },
+        must => { document  => InstanceOf[qw( UUIDB::Document )] },
+        can  => { clear_all => Bool                              },
     );
 
-    my $uuid    = $document->uuid;
-    my @indexes = @{ $self->index };
-    my %indexed = %{ $document->meta->{indexed} || {} };
+    my $uuid     = $document->uuid;
+    my @indexes  = @{ $self->index };
+    my %existing = %{ $document->meta->{indexed} || {} };
     if ( scalar @indexes ) {
         # TODO: This is a slow approach; might be better if we built a batch
         # index update process.
@@ -1415,12 +1427,12 @@ sub update_indexes {
         DOC_INDEX: foreach my $index ( @indexes ) {
             my $value = $values{ $index };
 
-            if ( exists $indexed{ $index } ) {
+            if ( exists $existing{ $index } ) {
                 # Remove it from the old index IF: the values have changed OR
                 # we're in clear_all mode.  And if we're in clear_all mode, we
                 # can skip ahead to the next one.
-                if ( $clear_all || $indexed{ $index } ne $value ) {
-                    $self->clear_index( $uuid, $index => $indexed{ $index } );
+                if ( $clear_all || $existing{ $index } ne $value ) {
+                    $self->clear_index( $uuid, $index => $existing{ $index } );
                 }
 
                 # If the indexed value hasn't changed, or we've just cleared out
@@ -1428,7 +1440,7 @@ sub update_indexes {
                 # ahead.
                 next DOC_INDEX
                     if $clear_all
-                    or $indexed{ $index } eq $value;
+                    or $existing{ $index } eq $value;
             }
 
             # If there's something in the index field, save it.
@@ -1451,11 +1463,41 @@ sub update_indexes {
     }
 }
 
-########################
-##  INTERNAL METHODS  ##
+##########################
+##  INTERNAL FUNCTIONS  ##
 ################################################################################
-
 # Everything below this line should be namespace cleaned.
+
+### build_chunked_path
+#
+#   my $path = build_chunked_path(
+#       $key_to_be_chunked,
+#       $number_of_chunks,
+#       $chunk_length,
+#       $optional_suffix,
+#   );
+#
+#   # Example:
+#   $path = build_chunked_path(
+#       "abcdefghijklmnopqrstuvwxyz", # String to be chunked
+#       3,                            # number of chunks
+#       2,                            # length of chunks
+#       "txt",                        # suffix (optional)
+#   );
+#   # $path == "ab/cd/ef/abcdefghijklmnopqrstuvwxyz.txt"
+#
+# Given a key, number of chunks into which it should be split, and the size of
+# chunks to use, composes a path prefixed by that many chunks of that size.  An
+# optional suffix can be passed which will be appended to the final filename.
+#
+# If invoked in list context will return the path parts; otherwise will return
+# the concatenated path with "/" separators.  See also the "plexing" overview in
+# the "DESCRIPTION" POD, as well as chunk_split below.
+#
+# Note that if the value to be chunked is less than the number * length
+# requested it will generate a warning and be right-padded with "0"s in order to
+# make up the difference.
+#
 
 sub build_chunked_path ($$$;$) {
     my (
@@ -1491,7 +1533,7 @@ sub build_chunked_path ($$$;$) {
         $key .= ( "0" x ( $breakdown_length - length( $key ) ) );
     }
 
-    my $path = join( "/", chunk_split( $key, $chunk_length, $chunks ) );
+    my $path = join( "/", chunk_split( $key, $chunks, $chunk_length ) );
 
     my $file = $key;
     if ( defined $suffix && length( $suffix) ) {
@@ -1502,8 +1544,23 @@ sub build_chunked_path ($$$;$) {
     return ( wantarray ? @parts : join( "/", @parts ) );
 }
 
+### chunk_split
+#
+#   my @parts = chunk_split( $key, $count, $length );
+#
+# Break a string (of any data type) into the requested number of parts of the
+# specified length (as measured in bytes).
+#
+# Strings shorter than the requested $count * $length will be broken up as far
+# as they can, resulting in fewer parts.  Strings longer than the requested size
+# will be truncated into at most $count parts.
+#
+# Returns an empty list of anything looks squirrelly (undefined arguments, non-
+# integer or <= 0 for length of count, etc.
+#
+
 sub chunk_split ($$$) {
-    my ($key, $length, $count) = @_;
+    my ($key, $count, $length) = @_;
 
     return unless
             defined $key
@@ -1519,6 +1576,17 @@ sub chunk_split ($$$) {
     # template expects based on $length * $count.
     return grep { length } unpack( $template, $key );
 }
+
+### is_empty_dir
+#
+#   if ( is_empty_dir( $some_dir ) ) {
+#       do_something();
+#   }
+#
+# Quick check to see if a directory is empty of absolutely everything but self
+# (.) and parent (..).  Croaks on an invalid or non-directory argument,
+# otherwise returns a simple boolean.
+#
 
 sub is_empty_dir (_) {
     my ($dir) = @_;
@@ -1537,6 +1605,21 @@ sub is_empty_dir (_) {
     return $empty;
 }
 
+### prune_file
+#
+#   prune_file( path_to_file, $optional_pruning_stop );
+#
+# Removes a file from a directory, and then if the directory is empty (see
+# "is_empty_dir"), removes that directory as well, recursively up the tree until
+# a non-empty directory is encountered or the optional "pruning stop" point is
+# reached (note that this is a path, rather than a count or other
+# number-of-steps type limiter, and must match exactly).
+#
+# Always returns 1 (if it hasn't croaked).
+#
+# See also "prune_tree".
+#
+
 sub prune_file ($;$) {
     my ($path, $stop) = @_;
 
@@ -1549,6 +1632,19 @@ sub prune_file ($;$) {
     return 1;
 }
 
+### prune_tree
+#
+#   my $pruned = prune_tree( $some_dir, $optional_pruning_stop );
+#
+# Removes $some_dir if it's empty (see "is_empty_dir"), then walks up the tree
+# and removes that as well (again, only if it's empty).  Will stop when it
+# reaches a non-empty directory, or when the optional "pruning stop" path is
+# encountered.  Paths are normalized with regard to trailing slashes before
+# comparison.
+#
+# See also "prune_file"
+#
+
 sub prune_tree ($;$) {
     my ($dir, $stop) = @_;
 
@@ -1556,8 +1652,10 @@ sub prune_tree ($;$) {
         unless    $dir
         and    -d $dir;
 
+    my $pruned   = 0;
     my $loop_dir = $dir;
-    $loop_dir =~ s{/*\Z}{}; # Remove any trailing slash
+    $loop_dir =~ s{/*\Z}{};          # Remove any trailing slash.
+    $stop     =~ s{/*\Z}{} if $stop; # Same for the stop dir, if set.
     PRUNE: while (1) {
         # Technically we could just do the rmdir instead of checking for
         # emptiness first, but we're trying to be nice.
@@ -1565,8 +1663,20 @@ sub prune_tree ($;$) {
         last PRUNE unless is_empty_dir $loop_dir;
         last PRUNE unless rmdir        $loop_dir;
         $loop_dir =~ s{\A (.*)/.* \Z}{$1}x;
+        $pruned++;
     }
+    return $pruned;
 }
+
+### read_index_file
+#
+#   my @uuids = read_index_file( $path_to_index_file );
+#
+# Reads an index file and returns a unique, sorted list of the UUIDs it
+# contains.  Croaks on an invalid filename, but otherwise pretty dumb - doesn't
+# validate contents or structure, just expects one hexadecimal UUID entry per
+# line
+#
 
 sub read_index_file (_) {
     my ($file) = @_;
@@ -1582,15 +1692,19 @@ sub read_index_file (_) {
     return sort keys %data;
 }
 
-sub remove_index_file (_) {
-    my ($path) = @_;
-
-    # Nothing to do if it doesn't exist.
-    return unless $path
-           and -f $path;
-
-    return prune_file $path;
-}
+### write_index_file
+#
+#   write_index_file( $file, $merge_mode, @uuids );
+#
+# Write an index file to disk containing the provided @uuids, building the
+# directory tree (inclusive of parents) as needed.
+#
+# If $merge_mode is true, will combine the incoming @uuids with the existing
+# contents of $file (if any).  Otherwise will simply overwrite.
+#
+# Always returns 1, assuming it hasn't croaked due to bad arguments or
+# filesystem issues.
+#
 
 sub write_index_file ($$@) {
     my ($path, $merge, @uuids) = @_;
@@ -1622,7 +1736,7 @@ sub write_index_file ($$@) {
     my %data = map { $_ => 1 } @uuids;
     $index->open(">");
     # TODO: benchmarking:
-    $index->println($_) for keys %data;
+    $index->println($_) for sort keys %data;
     $index->close();
     return 1;
 }
