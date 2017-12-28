@@ -4,9 +4,9 @@ use v5.10;
 use strict;
 use warnings;
 
-use Carp         qw( carp croak );
-use Scalar::Util qw( blessed    );
-use base         qw( Exporter   );
+use Carp         qw( carp croak confess );
+use Scalar::Util qw( blessed            );
+use base         qw( Exporter           );
 
 our @EXPORT_OK = qw(
     check_args
@@ -20,10 +20,10 @@ our @EXPORT_OK = qw(
 sub check_args (%) {
     my (%arg_details) = @_;
     my $args = delete $arg_details{args};
-    die "Missing args to check"
+    croak "Missing args to check"
         unless $args;
 
-    die "Args must be a hashref, not " . ref $args
+    croak "Args must be a hashref, not " . ref $args
         unless ref( $args )
         and    ref( $args ) eq 'HASH';
 
@@ -40,24 +40,25 @@ sub check_args (%) {
             if ( blessed $check ) {
                 if ( ref $check eq "Regexp" ) {
                     my $pass = eval { $data =~ $check };
-                    croak "Data failed regex $check: " . ( $data // "undef" )
+                    confess "Data failed regex $check: " . ( $data // "undef" )
                         unless $pass;
                 } else {
-                    die "Expected Type::Tiny, not " . ref( $check )
+                    croak "Expected Type::Tiny, not " . ref( $check )
                         unless blessed $check
                         and (
                                $check->isa( "Type::Tiny"   )
                             or $check->can( "assert_valid" )
                         );
-                    $check->assert_valid( $data );
+                    my $checked = $check->validate( $data );
+                    confess $checked if defined $checked;
                 }
             } elsif ( ref $check eq "CODE" ) {
                 local $@;
                 my $pass = eval { $check->( $data ) };
-                croak $@ if $@;
-                croak "Data failed sub check" unless $pass;
+                confess $@ if $@;
+                confess "Data failed sub check" unless $pass;
             } else {
-                croak "Invalid validator";
+                confess "Invalid validator";
             }
         }
     };
@@ -69,7 +70,7 @@ sub check_args (%) {
             delete $known_elements{$key}
                 if exists $known_elements{$key};
 
-            die "Missing required $key"
+            confess "Missing required $key"
                 unless exists $args->{$key};
 
             $validate->( $args->{$key}, $must->{$key} );
@@ -106,10 +107,10 @@ sub check_args (%) {
         }
     }
     if ( scalar( keys( %arg_details ) ) ) {
-        die "Found unrecognized validation spec in call to check_args";
+        croak "Found unrecognized validation spec in call to check_args";
     }
     if ( scalar( keys( %known_elements ) ) ) {
-        die "Found unrecognized args in call to check_args";
+        croak "Found unrecognized args in call to check_args";
     }
     return 1;
 }

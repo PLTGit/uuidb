@@ -591,7 +591,11 @@ sub get_document {
     # indexes during document delete.
     my @indexes = @{ $self->index };
     if ( scalar @indexes ) {
-        $document->meta->{indexed} = $document->extract( @indexes );
+        my %indexed = $document->extract( @indexes );
+        foreach my $key ( keys %indexed ) {
+            delete $indexed{ $key } unless defined $indexed{ $key };
+        }
+        $document->meta->{indexed} = \%indexed;
     }
 
     return $document;
@@ -1144,10 +1148,12 @@ See also L</search_index>.
 
 sub search {
     my ($self, $index, $value, $exact) = @_;
-    # Find exact match
-    my $match = $self->search_index( $index, $value, $exact, 1 );
-    return unless $match;
-    return read_index_file( $match );
+
+    my @uuids;
+    my @found = $self->search_index( $index, $value, $exact, 1 );
+    push @uuids, read_index_file for @found;
+
+    return sort @uuids;
 }
 
 =head2 search_index
@@ -1296,10 +1302,10 @@ sub search_index {
 
     my @found;
     if ( $as_path ) {
-        @found = values %matches;
+        @found = sort values %matches;
     } else {
         # Convert the keys back into strings
-        @found = map {
+        @found = sort map {
             $self->unindex_key( $_, $suffix )
         } keys %matches;
     }
@@ -1443,14 +1449,18 @@ sub update_indexes {
                     or $existing{ $index } eq $value;
             }
 
+            # Only write an index entry if there's something to write home about
+            next DOC_INDEX
+                unless defined $value
+                and    length  $value
+            ;
+
             # If there's something in the index field, save it.
             # If not, or we're in clearing mode, clear it.
             my $mode = (
-                !$clear_all
-                && defined $value
-                && length  $value
-                ?  'save_index'
-                :  'clear_index'
+                    $clear_all
+                ?  'clear_index'
+                :  'save_index'
             );
             $self->$mode( $uuid, $index, $value );
         }

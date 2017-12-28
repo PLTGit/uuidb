@@ -78,4 +78,4 @@ sub test_integration {
     my $document_copy = $uuidb->get_document( $new_key );
     isnt( $document_copy, $document, "New document instance returned" );
     is_deeply( $document_copy->data, $document->data, "Everything matches." );
-};
+}

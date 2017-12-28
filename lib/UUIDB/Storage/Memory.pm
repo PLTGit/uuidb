@@ -49,7 +49,7 @@ sub get_document {
     return $found;
 }
 
-sub exists {
+sub document_exists {
     my ($self, $key) = @_;
     check_args(
         args => {
@@ -68,7 +68,7 @@ sub exists {
     );
 }
 
-sub delete {
+sub delete_document {
     my ($self, $key, $warnings) = @_;
     $key = $self->standardize_key( $key );
     if ( $self->exists( $key ) ) {
