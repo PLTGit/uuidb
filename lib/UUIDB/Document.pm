@@ -119,6 +119,8 @@ sub extract {
             } elsif ( $self->fatal_unknown_extracts ) {
                 croak "Don't know how to extract field '$field' from object";
             }
+        } elsif ( $self->can( $field ) ) {
+            $return{ $field } = $self->$field();
         } elsif ( ref( $self->data ) eq 'HASH' ) {
             $return{ $field } = $self->data->{ $field };
         } else {

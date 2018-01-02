@@ -326,12 +326,7 @@ sub save {
     # TODO: check_args
     $self->init_check();
     $document->uuid( $self->uuid() ) unless $document->uuid();
-    return $self->storage->store_document(
-        $document,
-        ( $opts{storage_opts} ?
-            %{ $opts{storage_opts} }
-        : () ),
-    );
+    return $self->storage->store_document( $document );
 }
 
 sub set {
