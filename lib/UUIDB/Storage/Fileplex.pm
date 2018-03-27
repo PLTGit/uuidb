@@ -40,9 +40,9 @@ the UUIDB documents on disk.
 
 Documents are stored one-to-a-file, named for the UUID assigned by the database
 engine.  In order to avoid complications with overloading inodes or making a
-directory untenable for maintenance it breaks them up a little according to a
-simple (but extensible) encoding scheme, paring off C<plex_chunk> pieces
-(default 3) of the UUID value of <plex_length> each (default 2).  For example:
+directory untenable for maintenance, it breaks them up according to a simple
+(but extensible) encoding scheme, paring off C<plex_chunk> pieces (default 3) of
+the UUID value of <plex_length> each (default 2).  For example:
 
     A JSON document with the following UUID:
     d35fd9d9-b899-440a-a8d2-07d7f0675f15
@@ -112,8 +112,11 @@ These attributes are available to be set as options during instantiation, and
 affect the configuration and behavior of file storage, indexing, etc.  Some of
 these may only be set during instantiation (which is good, because changing them
 after the fact could render the data inaccessible).  These will be marked as
-C<read only> in the description, but may still be set by passing them to
-L<UUIDB#storage_options>.
+C<read only> in the description.
+
+You probably don't want to instantiate this as an object directly.  That should
+happen in the L<UUIDB> engine itself, where these options would be passed as the
+C<storage_options> parameter when instantiating I<that> instead.
 
 =head2 data_path
 
@@ -146,7 +149,7 @@ has data_path => (
     # value beginning with "Inigo", those will now be in the @documents
     # collection returned from the search. Tada!
 
-    # Get everyon from Florin.  This might be a large list - be careful about
+    # Get everyone from Florin.  This might be a large list - be careful about
     # what you index, the more unique the better.  Also, don't let anyone from
     # Guilder have this list.
     my @other_documents = $uuidb->storage->search_index( geo => "Florin" );

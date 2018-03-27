@@ -301,15 +301,27 @@ sub get_typed {
     );
 }
 
-# I don't think there's a good way to pass options to this one AND the list of
-# keys, not without being a bit too convoluted.  Now then, should it return the
-# simple list, the documents themselves, or a hash of key => value pairs, so
-# it's easy to match it all up?
+=head2 get_multi
+
+    # Returns a simple list in list context
+    my @documents = $db->get_multi( @keys );
+
+    # Produces a { $uuid => $document, ... } hashref in scalar context
+    my $mapped_docs = $db->get_multi( @keys );
+
+Retrieve several documents at once.  Assumes all documents are of the same type.
+See also L</get_document>, L</get_typed>.
+
+=cut
+
 sub get_multi {
     # TODO: need to figure out a good invocation signature for this.
     # ...and for graph storage, we'll want to introduce a "get_threaded" with a
     # depth setting, but that's likely to be in the Informcom specific data
     # model rather than here.
+    my ($self, @keys) = @_;
+    my %docs = map { $_ => $self->get_typed( $_ ) } @keys;
+    return wantarray ? values %docs : \%docs;
 }
 
 sub get_document {
