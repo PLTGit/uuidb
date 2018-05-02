@@ -266,6 +266,7 @@ sub get_typed {
     my ($self, $key, $document_type, $as_document) = @_;
 
     $self->init_check;
+    $document_type ||= $self->default_document_type;
     check_args(
         args => {
             key           => $key,
@@ -321,6 +322,12 @@ sub get_multi {
     # model rather than here.
     my ($self, @keys) = @_;
     my %docs = map { $_ => $self->get_typed( $_ ) } @keys;
+    return wantarray ? values %docs : \%docs;
+}
+
+sub get_multi_typed {
+    my ($self, @keys) = @_;
+    my %docs = map { $_ => $self->get_typed( $_, undef, 1 ) } @keys;
     return wantarray ? values %docs : \%docs;
 }
 
