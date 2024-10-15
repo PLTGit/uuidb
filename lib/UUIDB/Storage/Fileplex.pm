@@ -1436,11 +1436,17 @@ sub update_indexes {
         DOC_INDEX: foreach my $index ( @indexes ) {
             my $value = $values{ $index };
 
-            if ( exists $existing{ $index } ) {
+            if ( defined $existing{ $index } ) {
                 # Remove it from the old index IF: the values have changed OR
                 # we're in clear_all mode.  And if we're in clear_all mode, we
                 # can skip ahead to the next one.
-                if ( $clear_all || $existing{ $index } ne $value ) {
+                if (
+                    $clear_all
+                    || (
+                        defined( $value )
+                        && $existing{ $index } ne $value
+                    )
+                ) {
                     $self->clear_index( $uuid, $index => $existing{ $index } );
                 }
 
@@ -1449,7 +1455,7 @@ sub update_indexes {
                 # ahead.
                 next DOC_INDEX
                     if $clear_all
-                    or $existing{ $index } eq $value;
+                    or ( defined( $value ) and $existing{ $index } eq $value );
             }
 
             # Only write an index entry if there's something to write home about
